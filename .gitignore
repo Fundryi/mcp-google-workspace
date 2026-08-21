@@ -60,3 +60,4 @@ allowed.txt
 !.vscode/
 !.vscode/tasks.json
 UPSTREAM-UPDATE.md
+*.local.json
