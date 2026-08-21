@@ -20,6 +20,7 @@ from googleapiclient.errors import HttpError
 import httplib2
 import google_auth_httplib2
 from auth.scopes import SCOPES, get_current_scopes, has_required_scopes  # noqa
+from auth.allowlist import enforce_allowlist
 from auth.oauth21_session_store import get_oauth21_session_store
 from auth.credential_store import get_credential_store
 from auth.gateway_identity import normalize_principal_email
@@ -827,6 +828,7 @@ async def handle_auth_callback(
 
         user_google_email = user_info["email"]
         logger.info(f"Identified user_google_email: {user_google_email}")
+        enforce_allowlist(user_google_email)
 
         enforcement_marker = state_info.get("enforce_user_email_match")
         if is_trust_gateway_identity():

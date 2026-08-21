@@ -15,6 +15,7 @@ from googleapiclient.discovery import build
 from fastmcp.server.dependencies import get_access_token, get_context
 from auth.google_auth import get_authenticated_google_service, GoogleAuthenticationError
 from auth.gateway_identity import require_gateway_principal
+from auth.allowlist import enforce_allowlist
 from auth.request_identity import get_request_identity
 from core.config import USER_GOOGLE_EMAIL as _ENV_USER_EMAIL
 from auth.oauth21_session_store import (
@@ -311,6 +312,7 @@ async def _authenticate_service(
         config = get_oauth_config()
         if user_google_email:
             _validate_dwd_domain(user_google_email, config)
+            enforce_allowlist(user_google_email)
             target_email = user_google_email
         else:
             target_email = canonical_email

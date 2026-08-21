@@ -19,6 +19,44 @@ gmail:
     - get_gmail_threads_content_batch
     - batch_modify_gmail_message_labels
     - start_google_auth
+    # Fork additions (gmail/gmail_extended_tools.py)
+    - list_gmail_accounts
+    - trash_gmail_message
+    - untrash_gmail_message
+    - trash_gmail_thread
+    - untrash_gmail_thread
+    - list_gmail_drafts
+    - get_gmail_draft
+    - update_gmail_draft
+    - delete_gmail_draft
+    - send_gmail_draft
+    - list_gmail_threads
+    - modify_gmail_thread_labels
+    - get_gmail_label
+    - get_gmail_filter
+    - get_gmail_profile
+    - watch_gmail_mailbox
+    - stop_gmail_mailbox_watch
+    - get_gmail_vacation_settings
+    - update_gmail_vacation_settings
+    - get_gmail_imap_settings
+    - update_gmail_imap_settings
+    - get_gmail_pop_settings
+    - update_gmail_pop_settings
+    - get_gmail_language_settings
+    - update_gmail_language_settings
+    - get_gmail_auto_forwarding
+    - update_gmail_auto_forwarding
+    - list_gmail_forwarding_addresses
+    - get_gmail_forwarding_address
+    - create_gmail_forwarding_address
+    - delete_gmail_forwarding_address
+    - list_gmail_send_as
+    - get_gmail_send_as
+    - create_gmail_send_as
+    - update_gmail_send_as
+    - delete_gmail_send_as
+    - verify_gmail_send_as
 
 drive:
   core:

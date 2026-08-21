@@ -158,6 +158,37 @@ Each page lists every tool with its tier, parameters, required scopes, and examp
 
 > 💬 **Google Chat** needs a one-time Chat app configuration and a Workspace account - see the [Chat setup FAQ](https://workspacemcp.com/welcome/faq?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=services-chat-faq).
 
+## About this fork
+
+This is a private fork of [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp). It adds the Gmail management tools that upstream does not ship. Everything else is upstream, unchanged.
+
+Added tools live in `gmail/gmail_extended_tools.py` (37 tools):
+
+- Trash: `trash_gmail_message`, `untrash_gmail_message`, `trash_gmail_thread`, `untrash_gmail_thread`. There is no permanent delete and the `https://mail.google.com/` scope is never requested. That is a deliberate choice.
+- Drafts: `list_gmail_drafts`, `get_gmail_draft`, `update_gmail_draft`, `delete_gmail_draft`, `send_gmail_draft`. An explicit subject passed to `update_gmail_draft` is always kept as given, even inside a thread.
+- Threads and labels: `list_gmail_threads`, `modify_gmail_thread_labels`, `get_gmail_label`, `get_gmail_filter`.
+- Mailbox: `get_gmail_profile`, `list_gmail_accounts`, `watch_gmail_mailbox`, `stop_gmail_mailbox_watch`.
+- Settings: vacation responder, IMAP, POP, display language, auto-forwarding (get and update for each).
+- Forwarding addresses (list, get, create, delete) and send-as aliases (list, get, create, update, delete, verify).
+
+Writes to auto-forwarding, forwarding addresses, and send-as aliases need the `gmail.settings.sharing` scope. Google only grants it to service accounts with domain-wide delegation on a Workspace tenant. On a consumer Gmail account these tools return an error from Google.
+
+### Email allowlist
+
+Set `WORKSPACE_ALLOWED_EMAILS` (comma separated) or put an `allowed.txt` file (one address per line, `#` comments allowed) in the credentials directory. Once either exists, accounts that are not listed cannot complete OAuth and cannot be impersonated through a service account. An empty list blocks every account. When neither exists the allowlist is off and the server behaves like upstream.
+
+### Staying current with upstream
+
+```sh
+git fetch upstream
+git log --oneline main..upstream/main   # what is new
+git merge upstream/main                 # clean as long as our changes stay additive
+uv sync --frozen --group test
+uv run --frozen pytest
+```
+
+After a merge, start the server with `--tools gmail` and check that the tool list still has 52 entries (14 upstream Gmail tools, `start_google_auth`, and 37 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.
+
 ## Quick Start
 
 > Set credentials → pick a launch command → connect your client. Full walkthrough with screenshots: **[workspacemcp.com/quick-start](https://workspacemcp.com/quick-start?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=quickstart-hero)**

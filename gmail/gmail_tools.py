@@ -3894,3 +3894,7 @@ async def batch_modify_gmail_message_labels(
         actions.append(f"Removed labels: {', '.join(remove_label_ids)}")
 
     return f"Labels updated for {len(message_ids)} messages: {'; '.join(actions)}"
+
+
+# Fork addition: Gmail management tools live in their own module.
+import gmail.gmail_extended_tools  # noqa: E402,F401
