@@ -171,7 +171,14 @@ Added tools live in `gmail/gmail_extended_tools.py` (37 tools):
 - Settings: vacation responder, IMAP, POP, display language, auto-forwarding (get and update for each).
 - Forwarding addresses (list, get, create, delete) and send-as aliases (list, get, create, update, delete, verify).
 
-Writes to auto-forwarding, forwarding addresses, and send-as aliases need the `gmail.settings.sharing` scope. Google only grants it to service accounts with domain-wide delegation on a Workspace tenant. On a consumer Gmail account these tools return an error from Google.
+### Private and Workspace accounts in one server
+
+Writes to auto-forwarding, forwarding addresses, and send-as aliases (7 tools) need the `gmail.settings.sharing` scope. Google only grants it to a service account with domain-wide delegation, so they work on Workspace accounts served that way and on nothing else. The server handles this by itself:
+
+- `list_gmail_accounts` reports every account with its type and what it can do, for example `me@gmail.com | private, oauth | core tools` and `<any mailbox>@firma.example | workspace, delegated | all tools`. Agents should call it first.
+- The 7 tools check the account before any Google call. On an account that is not delegated they return a message that points to `list_gmail_accounts` instead of a 403 from Google.
+- When no service account is configured at all, the 7 tools are removed at startup. With `--tools gmail` you then see 45 tools instead of 52.
+- One server can hold OAuth credentials for private accounts and a delegated service account for Workspace domains at the same time. Set `GOOGLE_SERVICE_ACCOUNT_KEY_FILE`, `USER_GOOGLE_EMAIL`, and `DWD_ALLOWED_DOMAINS=firma.example`. Addresses in those domains use the service account. Any other address that has gone through `start_google_auth` uses its own OAuth credentials. Addresses with neither are rejected, as in upstream. Without `DWD_ALLOWED_DOMAINS` the service account serves every address, which is upstream's behaviour.
 
 ### Email allowlist
 
@@ -187,7 +194,7 @@ uv sync --frozen --group test
 uv run --frozen pytest
 ```
 
-After a merge, start the server with `--tools gmail` and check that the tool list still has 52 entries (14 upstream Gmail tools, `start_google_auth`, and 37 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.
+After a merge, start the server with `--tools gmail` and check that the tool list still has 52 entries with a service account configured, or 45 without one (14 upstream Gmail tools, `start_google_auth`, and 37 or 30 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.
 
 ## Quick Start
 

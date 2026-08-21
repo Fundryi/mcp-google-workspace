@@ -58,10 +58,15 @@ def _sent_raw(service) -> str:
 
 
 def test_every_extended_tool_is_registered_exactly_once():
+    # Tests run without a service account, so the 7 delegated tools are hidden.
     components = get_tool_components(server)
-    for name in ext.EXTENDED_TOOL_NAMES:
+    visible = set(ext.EXTENDED_TOOL_NAMES) - set(ext.DELEGATED_TOOL_NAMES)
+    for name in visible:
         assert name in components, name
+    for name in ext.DELEGATED_TOOL_NAMES:
+        assert name not in components, name
     assert len(set(ext.EXTENDED_TOOL_NAMES)) == len(ext.EXTENDED_TOOL_NAMES) == 37
+    assert len(ext.DELEGATED_TOOL_NAMES) == 7
 
 
 def test_every_extended_tool_is_in_tool_tiers():
@@ -193,7 +198,8 @@ async def test_update_vacation_drops_unset_fields():
 
 
 @pytest.mark.asyncio
-async def test_update_auto_forwarding_requires_address_when_enabling():
+async def test_update_auto_forwarding_requires_address_when_enabling(monkeypatch):
+    monkeypatch.setattr(ext, "is_delegated", lambda email: True)
     with pytest.raises(Exception, match="email_address"):
         await _unwrap(ext.update_gmail_auto_forwarding)(
             service=Mock(), user_google_email="u@example.com", enabled=True
@@ -201,7 +207,8 @@ async def test_update_auto_forwarding_requires_address_when_enabling():
 
 
 @pytest.mark.asyncio
-async def test_update_send_as_uses_patch():
+async def test_update_send_as_uses_patch(monkeypatch):
+    monkeypatch.setattr(ext, "is_delegated", lambda email: True)
     service = Mock()
     service.users().settings().sendAs().patch().execute.return_value = {}
     await _unwrap(ext.update_gmail_send_as)(
@@ -233,3 +240,47 @@ def test_tool_refuses_to_guess_account(monkeypatch):
         sd._extract_oauth20_user_email(
             (), {"draft_id": "d1"}, inspect.signature(sample)
         )
+
+
+# --- delegation gate --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delegated_tool_refuses_private_account_before_any_api_call(monkeypatch):
+    monkeypatch.setattr(ext, "is_delegated", lambda email: False)
+    service = Mock()
+    gated = ext._delegated_only(_unwrap(ext.create_gmail_send_as))
+    with pytest.raises(Exception, match="list_gmail_accounts"):
+        await gated(
+            service=service,
+            user_google_email="me@gmail.com",
+            send_as_email="alias@gmail.com",
+        )
+    service.users.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_delegated_tool_runs_for_delegated_account(monkeypatch):
+    monkeypatch.setattr(
+        ext, "is_delegated", lambda email: email.endswith("@firma.example")
+    )
+    service = Mock()
+    service.users().settings().sendAs().verify().execute.return_value = {}
+    gated = ext._delegated_only(_unwrap(ext.verify_gmail_send_as))
+    result = await gated(
+        service=service,
+        user_google_email="me@firma.example",
+        send_as_email="alias@firma.example",
+    )
+    assert "alias@firma.example" in result
+
+
+@pytest.mark.asyncio
+async def test_list_accounts_reports_type_and_capabilities(monkeypatch):
+    store = Mock()
+    store.list_users.return_value = ["me@gmail.com", "boss@firma.example"]
+    monkeypatch.setattr(ext, "get_credential_store", lambda: store)
+    monkeypatch.setattr(ext, "is_service_account_enabled", lambda: False)
+    out = await _unwrap(ext.list_gmail_accounts)()
+    assert "me@gmail.com | private, oauth | core tools" in out
+    assert "boss@firma.example | workspace, oauth | core tools" in out

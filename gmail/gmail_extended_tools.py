@@ -11,13 +11,16 @@ import base64
 import logging
 from email.message import EmailMessage
 from email.policy import SMTP
+import functools
+import os
 from typing import Annotated, Any, Dict, Literal, Optional
 
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
+from auth.account_capabilities import format_account_line, is_delegated
 from auth.credential_store import get_credential_store
-from auth.oauth_config import is_service_account_enabled
+from auth.oauth_config import get_oauth_config, is_service_account_enabled
 from auth.scopes import (
     GMAIL_COMPOSE_SCOPE,
     GMAIL_MODIFY_SCOPE,
@@ -63,6 +66,28 @@ def _drop_none(**kwargs) -> Dict[str, Any]:
     return {k: v for k, v in kwargs.items() if v is not None}
 
 
+def _delegated_only(func):
+    """Refuse, before any Google call, when the account is not delegated.
+
+    gmail.settings.sharing writes only work through a service account with
+    domain-wide delegation. Sits outside require_google_service so the
+    refusal happens before authentication is even attempted.
+    """
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        email = kwargs.get("user_google_email") or os.getenv("USER_GOOGLE_EMAIL", "")
+        if not is_delegated(email):
+            raise Exception(
+                f"{func.__name__} needs a Workspace account served by a delegated "
+                f"service account. '{email}' is not one. Call list_gmail_accounts "
+                "to see which accounts support this."
+            )
+        return await func(*args, **kwargs)
+
+    return wrapper
+
+
 # ---------------------------------------------------------------------------
 # Accounts
 # ---------------------------------------------------------------------------
@@ -71,22 +96,23 @@ def _drop_none(**kwargs) -> Dict[str, Any]:
 @server.tool(title="List Gmail Accounts", annotations=_READ)
 async def list_gmail_accounts() -> str:
     """
-    Lists the Google accounts this server holds credentials for. Use one of
-    these values for user_google_email on every other tool. The server never
-    guesses a mailbox when several are available.
+    Lists the accounts this server can act on and what each one supports.
+    Call this first. Use the email as user_google_email on every other tool.
+    "core tools" means everything except the send-as, forwarding-address and
+    auto-forwarding writes; those need "all tools" (Workspace, delegated).
 
     Returns:
-        str: One email address per line, or a note when none are stored.
+        str: One line per account: email | type, auth | tools.
     """
+    lines = []
     if is_service_account_enabled():
-        return (
-            "Service account mode: any mailbox in the delegated domain can be "
-            "addressed via user_google_email; nothing is stored locally."
-        )
+        domains = get_oauth_config().dwd_allowed_domains or ["(any domain)"]
+        lines += [format_account_line(f"<any mailbox>@{d}") for d in domains]
     users = await asyncio.to_thread(get_credential_store().list_users)
-    if not users:
+    lines += [format_account_line(u) for u in sorted(users)]
+    if not lines:
         return "No accounts are authenticated yet. Run start_google_auth first."
-    return "\n".join(sorted(users))
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -890,6 +916,7 @@ async def get_gmail_auto_forwarding(service, user_google_email: str) -> str:
 
 @server.tool(title="Update Gmail Auto Forwarding", annotations=_WRITE)
 @handle_http_errors("update_gmail_auto_forwarding", service_type="gmail")
+@_delegated_only
 @require_google_service("gmail", GMAIL_SETTINGS_SHARING_SCOPE)
 async def update_gmail_auto_forwarding(
     service,
@@ -984,6 +1011,7 @@ async def get_gmail_forwarding_address(
 
 @server.tool(title="Create Gmail Forwarding Address", annotations=_WRITE)
 @handle_http_errors("create_gmail_forwarding_address", service_type="gmail")
+@_delegated_only
 @require_google_service("gmail", GMAIL_SETTINGS_SHARING_SCOPE)
 async def create_gmail_forwarding_address(
     service, user_google_email: str, forwarding_email: str
@@ -1012,6 +1040,7 @@ async def create_gmail_forwarding_address(
 
 @server.tool(title="Delete Gmail Forwarding Address", annotations=_DESTRUCTIVE)
 @handle_http_errors("delete_gmail_forwarding_address", service_type="gmail")
+@_delegated_only
 @require_google_service("gmail", GMAIL_SETTINGS_SHARING_SCOPE)
 async def delete_gmail_forwarding_address(
     service, user_google_email: str, forwarding_email: str
@@ -1100,6 +1129,7 @@ async def get_gmail_send_as(service, user_google_email: str, send_as_email: str)
 
 @server.tool(title="Create Gmail Send-As Alias", annotations=_WRITE)
 @handle_http_errors("create_gmail_send_as", service_type="gmail")
+@_delegated_only
 @require_google_service("gmail", GMAIL_SETTINGS_SHARING_SCOPE)
 async def create_gmail_send_as(
     service,
@@ -1141,6 +1171,7 @@ async def create_gmail_send_as(
 
 @server.tool(title="Update Gmail Send-As Alias", annotations=_WRITE)
 @handle_http_errors("update_gmail_send_as", service_type="gmail")
+@_delegated_only
 @require_google_service("gmail", GMAIL_SETTINGS_SHARING_SCOPE)
 async def update_gmail_send_as(
     service,
@@ -1190,6 +1221,7 @@ async def update_gmail_send_as(
 
 @server.tool(title="Delete Gmail Send-As Alias", annotations=_DESTRUCTIVE)
 @handle_http_errors("delete_gmail_send_as", service_type="gmail")
+@_delegated_only
 @require_google_service("gmail", GMAIL_SETTINGS_SHARING_SCOPE)
 async def delete_gmail_send_as(
     service, user_google_email: str, send_as_email: str
@@ -1217,6 +1249,7 @@ async def delete_gmail_send_as(
 
 @server.tool(title="Verify Gmail Send-As Alias", annotations=_WRITE)
 @handle_http_errors("verify_gmail_send_as", service_type="gmail")
+@_delegated_only
 @require_google_service("gmail", GMAIL_SETTINGS_SHARING_SCOPE)
 async def verify_gmail_send_as(
     service, user_google_email: str, send_as_email: str
@@ -1281,3 +1314,27 @@ EXTENDED_TOOL_NAMES = [
     "delete_gmail_send_as",
     "verify_gmail_send_as",
 ]
+
+DELEGATED_TOOL_NAMES = [
+    "update_gmail_auto_forwarding",
+    "create_gmail_forwarding_address",
+    "delete_gmail_forwarding_address",
+    "create_gmail_send_as",
+    "update_gmail_send_as",
+    "delete_gmail_send_as",
+    "verify_gmail_send_as",
+]
+
+
+def _hide_delegated_tools_without_service_account() -> None:
+    """Without a service account nobody can ever use these, so drop them."""
+    if is_service_account_enabled():
+        return
+    for name in DELEGATED_TOOL_NAMES:
+        try:
+            server.local_provider.remove_tool(name)
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning("Could not hide %s: %s", name, exc)
+
+
+_hide_delegated_tools_without_service_account()

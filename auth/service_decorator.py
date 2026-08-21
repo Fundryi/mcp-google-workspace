@@ -286,6 +286,21 @@ def _validate_dwd_domain(email: str, config) -> None:
         )
 
 
+def _prefers_oauth(email: Optional[str]) -> bool:
+    """True when a service account is on but this address should use OAuth instead."""
+    if not email:
+        return False
+    domains = get_oauth_config().dwd_allowed_domains
+    if not domains or email.rsplit("@", 1)[-1].lower() in domains:
+        return False
+    try:
+        from auth.credential_store import get_credential_store
+
+        return get_credential_store().get_credential(email) is not None
+    except Exception:
+        return False
+
+
 async def _authenticate_service(
     use_oauth21: bool,
     service_name: str,
@@ -302,7 +317,9 @@ async def _authenticate_service(
     Returns:
         Tuple of (service, actual_user_email)
     """
-    if is_service_account_enabled():
+    # Fork: an address outside DWD_ALLOWED_DOMAINS that already has its own
+    # OAuth credentials uses them, so private and delegated accounts share one server.
+    if is_service_account_enabled() and not _prefers_oauth(user_google_email):
         canonical_email = _get_configured_user_google_email()
         if not canonical_email:
             raise GoogleAuthenticationError(
