@@ -1,6 +1,7 @@
 """Check whether upstream has new commits and write a hand-off prompt for an AI.
 
-Runs on folder open through .vscode/tasks.json, or by hand:
+Runs on folder open through .vscode/tasks.json (open the folder or the
+.code-workspace file in VS Code and allow automatic tasks once), or by hand:
     python scripts/check_upstream.py
 Writes UPSTREAM-UPDATE.md (gitignored) when there is something to merge.
 """
@@ -94,6 +95,8 @@ def main() -> int:
     print(
         f"Upstream: {len(commits)} new commit(s). Hand-off written to UPSTREAM-UPDATE.md"
     )
+    # Pop the hand-off into the editor so the update is hard to miss.
+    subprocess.run(["code", "-r", str(REPORT)], shell=True, check=False)
     print("Files we also edited:", ", ".join(overlap) or "none")
     for c in commits[:15]:
         print(" ", c)

@@ -3,12 +3,13 @@
   "tasks": [
     {
       "label": "Upstream: check for updates",
+      "detail": "Runs on folder open. Fetches upstream and opens UPSTREAM-UPDATE.md when there is something to merge.",
       "type": "shell",
       "command": "python",
       "args": ["scripts/check_upstream.py"],
       "runOptions": { "runOn": "folderOpen" },
       "presentation": {
-        "reveal": "always",
+        "reveal": "silent",
         "panel": "dedicated",
         "clear": true,
         "close": false

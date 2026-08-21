@@ -198,6 +198,8 @@ uv sync --frozen --group test
 uv run --frozen pytest
 ```
 
+VS Code does the first step for you. Open `mcp-google-workspace.code-workspace` (or the folder) and allow automatic tasks once. On every open, `scripts/check_upstream.py` fetches upstream. When new commits exist it writes and opens `UPSTREAM-UPDATE.md`, which holds a ready prompt you can paste into an AI chat to do the merge. You can also run it by hand: `python scripts/check_upstream.py`.
+
 After a merge, start the server with `--tools gmail` and check that the tool list still has 52 entries with a service account configured, or 45 without one (14 upstream Gmail tools, `start_google_auth`, and 37 or 30 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.
 
 ## Quick Start

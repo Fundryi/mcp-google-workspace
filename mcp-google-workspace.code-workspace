@@ -1,0 +1,14 @@
+{
+  "folders": [{ "path": "." }],
+  "settings": {
+    "task.allowAutomaticTasks": "on",
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": ["tests", "--ignore=tests/integration"],
+    "files.eol": "\n",
+    "files.exclude": { "**/__pycache__": true, "**/.pytest_cache": true }
+  },
+  "extensions": {
+    "recommendations": ["ms-python.python", "charliermarsh.ruff"]
+  }
+}
