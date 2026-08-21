@@ -186,6 +186,10 @@ Set `WORKSPACE_ALLOWED_EMAILS` (comma separated) or put an `allowed.txt` file (o
 
 ### Staying current with upstream
 
+When you open this folder in VS Code, the task `Upstream: check for updates` runs (`.vscode/tasks.json`, VS Code asks once to allow automatic tasks). It fetches upstream and, when there are new commits, writes `UPSTREAM-UPDATE.md` with a ready prompt you can paste into an AI chat. You can also run it by hand: `python scripts/check_upstream.py`.
+
+Manual flow:
+
 ```sh
 git fetch upstream
 git log --oneline main..upstream/main   # what is new

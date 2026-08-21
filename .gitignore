@@ -55,3 +55,8 @@ accounts.json
 credentials.json
 allowed.txt
 .credentials/
+
+# ---- Fork: upstream check ----------------------------------------------
+!.vscode/
+!.vscode/tasks.json
+UPSTREAM-UPDATE.md
