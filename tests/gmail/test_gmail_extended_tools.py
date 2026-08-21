@@ -90,8 +90,18 @@ def test_no_permanent_delete_anywhere():
     assert "mail.google.com" not in scopes_src
 
 
-def test_sharing_scope_is_in_gmail_scope_group():
-    assert GMAIL_SETTINGS_SHARING_SCOPE in GMAIL_SCOPES
+def test_sharing_scope_only_with_service_account(monkeypatch):
+    import importlib
+
+    import auth.scopes as scopes
+
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_KEY_FILE", raising=False)
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_KEY_JSON", raising=False)
+    assert GMAIL_SETTINGS_SHARING_SCOPE not in importlib.reload(scopes).GMAIL_SCOPES
+    monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_KEY_FILE", "/fake/key.json")
+    assert GMAIL_SETTINGS_SHARING_SCOPE in importlib.reload(scopes).GMAIL_SCOPES
+    monkeypatch.delenv("GOOGLE_SERVICE_ACCOUNT_KEY_FILE")
+    importlib.reload(scopes)
 
 
 # --- trash -----------------------------------------------------------------

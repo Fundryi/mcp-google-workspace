@@ -6,6 +6,7 @@ Separated from service_decorator.py to avoid circular imports.
 """
 
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -158,8 +159,13 @@ GMAIL_SCOPES = [
     GMAIL_MODIFY_SCOPE,
     GMAIL_LABELS_SCOPE,
     GMAIL_SETTINGS_BASIC_SCOPE,
-    GMAIL_SETTINGS_SHARING_SCOPE,
 ]
+# Fork: gmail.settings.sharing only works through a delegated service account,
+# so request it only when one is configured. Private OAuth accounts never see it.
+if os.getenv("GOOGLE_SERVICE_ACCOUNT_KEY_FILE") or os.getenv(
+    "GOOGLE_SERVICE_ACCOUNT_KEY_JSON"
+):
+    GMAIL_SCOPES.append(GMAIL_SETTINGS_SHARING_SCOPE)
 
 CHAT_SCOPES = [
     CHAT_READONLY_SCOPE,

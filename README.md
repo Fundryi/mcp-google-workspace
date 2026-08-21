@@ -173,7 +173,7 @@ Added tools live in `gmail/gmail_extended_tools.py` (37 tools):
 
 ### Private and Workspace accounts in one server
 
-Writes to auto-forwarding, forwarding addresses, and send-as aliases (7 tools) need the `gmail.settings.sharing` scope. Google only grants it to a service account with domain-wide delegation, so they work on Workspace accounts served that way and on nothing else. The server handles this by itself:
+Writes to auto-forwarding, forwarding addresses, and send-as aliases (7 tools) need the `gmail.settings.sharing` scope. The server only requests that scope when a service account is configured, so private OAuth accounts never see it on the consent screen. Google only grants it to a service account with domain-wide delegation, so they work on Workspace accounts served that way and on nothing else. The server handles this by itself:
 
 - `list_gmail_accounts` reports every account with its type and what it can do, for example `me@gmail.com | private, oauth | core tools` and `<any mailbox>@firma.example | workspace, delegated | all tools`. Agents should call it first.
 - The 7 tools check the account before any Google call. On an account that is not delegated they return a message that points to `list_gmail_accounts` instead of a 403 from Google.
