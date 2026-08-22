@@ -161,6 +161,21 @@ def _find_any_credentials(
     return None, None
 
 
+def _is_permanent_refresh_error(error: RefreshError) -> bool:
+    """True when only a new sign-in can fix it (revoked, deleted, wrong client)."""
+    text = str(error).lower()
+    return any(
+        marker in text
+        for marker in (
+            "invalid_grant",
+            "invalid_client",
+            "unauthorized_client",
+            "expired or revoked",
+            "deleted_client",
+        )
+    )
+
+
 def save_credentials_to_session(session_id: str, credentials: Credentials):
     """Saves user credentials using OAuth21SessionStore."""
     # Get user email from credentials if possible
@@ -486,12 +501,25 @@ async def _determine_oauth_prompt(
 # --- Core OAuth Logic ---
 
 
+def _should_open_browser(requested: bool = True) -> bool:
+    """Only an explicit start_google_auth call in local stdio may open a tab.
+
+    A tool call that merely finds no credentials returns the URL instead, so
+    the AI never pops a browser on the user. WORKSPACE_MCP_NO_BROWSER=1 turns
+    the tab off everywhere.
+    """
+    if not requested or get_transport_mode() != "stdio" or is_oauth21_enabled():
+        return False
+    return os.getenv("WORKSPACE_MCP_NO_BROWSER", "").lower() not in ("1", "true", "yes")
+
+
 async def start_auth_flow(
     user_google_email: Optional[str],
     service_name: str,  # e.g., "Google Calendar", "Gmail" for user messages
     redirect_uri: str,  # Added redirect_uri as a required parameter
     *,
     principal_source: Optional[str] = None,
+    open_browser: bool = True,
 ) -> str:
     """
     Initiates the Google OAuth flow and returns an actionable message for the user.
@@ -574,13 +602,7 @@ async def start_auth_flow(
         auth_url, _ = flow.authorization_url(**auth_kwargs)
 
         browser_opened = False
-        should_open_browser = (
-            get_transport_mode() == "stdio"
-            and not is_oauth21_enabled()
-            and os.getenv("WORKSPACE_MCP_NO_BROWSER", "").lower()
-            not in ("1", "true", "yes")
-        )
-        if should_open_browser:
+        if _should_open_browser(open_browser):
             # Only legacy stdio runs on the user's workstation. HTTP/OAuth 2.1
             # deployments may be remote, so opening a server-side browser is wrong.
             try:
@@ -1247,6 +1269,13 @@ def get_credentials(
                 # Update session cache if it was the source or is active
                 save_credentials_to_session(session_id, credentials)
         except RefreshError as e:
+            if not _is_permanent_refresh_error(e):
+                # Google's token endpoint hiccup or no network. The stored token
+                # is still good, so do not send the user to sign in again.
+                logger.warning(
+                    f"[get_credentials] Transient RefreshError: {e}. User: '{user_google_email}'"
+                )
+                raise
             logger.warning(
                 f"[get_credentials] RefreshError - token expired/revoked: {e}. User: '{user_google_email}', Session: '{session_id}'"
             )
@@ -1435,6 +1464,7 @@ async def get_authenticated_google_service(
             principal_source=(
                 "gateway_assertion" if is_trust_gateway_identity() else None
             ),
+            open_browser=False,
         )
 
         # Extract the auth URL from the response and raise with it

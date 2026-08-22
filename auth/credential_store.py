@@ -231,9 +231,13 @@ class LocalDirectoryCredentialStore(CredentialStore):
         }
 
         try:
-            fd = os.open(str(creds_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            # Write a sibling file and rename so a crash mid-write never leaves a
+            # truncated credential file behind.
+            tmp_path = f"{creds_path}.tmp"
+            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w") as f:
                 json.dump(creds_data, f, indent=2)
+            os.replace(tmp_path, str(creds_path))
             logger.info(f"Stored credentials for {user_email} to {creds_path}")
             return True
         except IOError as e:
