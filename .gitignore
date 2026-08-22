@@ -61,3 +61,5 @@ allowed.txt
 !.vscode/tasks.json
 UPSTREAM-UPDATE.md
 *.local.json
+
+.playwright-cli/
