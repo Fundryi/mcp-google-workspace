@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - Windows
 from fastmcp.server.auth import AccessToken
 from fastmcp.server.dependencies import get_http_headers
 from google.oauth2.credentials import Credentials
-from auth.oauth_config import is_external_oauth21_provider
+from auth.oauth_config import get_transport_mode, is_external_oauth21_provider
 
 logger = logging.getLogger(__name__)
 
@@ -624,11 +624,12 @@ class OAuth21SessionStore:
             mcp_session_id: FastMCP session ID to map to this user
             issuer: Token issuer (e.g., "https://accounts.google.com")
         """
-        # Single-user mode reads credentials directly by email and bypasses the
-        # session mapping. Keeping the immutable MCP session binding enabled here
-        # turns a successful token refresh for a second account into a false
-        # "rebind" error.
-        if os.getenv("MCP_SINGLE_USER_MODE") == "1":
+        # stdio picks the Google account from user_google_email on every call, so
+        # its FastMCP session is not a per-user boundary. Single-user mode reads
+        # credentials directly by email. In both cases the immutable MCP session
+        # binding turns a successful token refresh for a second account into a
+        # false "rebind" error (issues/716).
+        if get_transport_mode() == "stdio" or os.getenv("MCP_SINGLE_USER_MODE") == "1":
             mcp_session_id = None
 
         with self._lock:

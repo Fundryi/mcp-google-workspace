@@ -575,7 +575,10 @@ async def start_auth_flow(
 
         browser_opened = False
         should_open_browser = (
-            get_transport_mode() == "stdio" and not is_oauth21_enabled()
+            get_transport_mode() == "stdio"
+            and not is_oauth21_enabled()
+            and os.getenv("WORKSPACE_MCP_NO_BROWSER", "").lower()
+            not in ("1", "true", "yes")
         )
         if should_open_browser:
             # Only legacy stdio runs on the user's workstation. HTTP/OAuth 2.1

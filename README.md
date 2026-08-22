@@ -200,6 +200,11 @@ uv run --frozen pytest
 
 VS Code does the first step for you. Open `mcp-google-workspace.code-workspace` (or the folder) and allow automatic tasks once. On every open, `scripts/check_upstream.py` fetches upstream. When new commits exist it writes and opens `UPSTREAM-UPDATE.md`, which holds a ready prompt you can paste into an AI chat to do the merge. You can also run it by hand: `python scripts/check_upstream.py`.
 
+### Fixes on top of upstream
+
+- Several accounts in one stdio session. Upstream binds each MCP session to the first account whose token refreshes, so a second account fails an hour in with "Session already bound to a different user" and an endless sign-in loop. The binding is skipped for stdio, where `user_google_email` picks the account on every call. Remote HTTP keeps the guard.
+- `WORKSPACE_MCP_NO_BROWSER=1` stops the server from opening a browser tab on its own. The auth URL is still returned in the tool result.
+
 After a merge, start the server with `--tools gmail` and check that the tool list still has 52 entries with a service account configured, or 45 without one (14 upstream Gmail tools, `start_google_auth`, and 37 or 30 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.
 
 ## Quick Start

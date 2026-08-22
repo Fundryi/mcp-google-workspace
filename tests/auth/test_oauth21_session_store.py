@@ -166,7 +166,8 @@ def test_serialize_oauth_state_preserves_missing_enforcement_marker(tmp_path):
     assert "enforce_user_email_match" not in serialized
 
 
-def test_store_session_rejects_mcp_session_rebind_by_default(tmp_path):
+def test_store_session_rejects_mcp_session_rebind_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_store, "get_transport_mode", lambda: "streamable-http")
     state_file = tmp_path / "oauth_states.json"
     store = OAuth21SessionStore(oauth_state_file=str(state_file))
 
@@ -184,7 +185,11 @@ def test_store_session_rejects_mcp_session_rebind_by_default(tmp_path):
         )
 
 
-def test_store_session_skips_mcp_binding_in_single_user_mode(tmp_path, monkeypatch):
+@pytest.mark.parametrize("transport", ["stdio", "streamable-http"])
+def test_store_session_skips_mcp_binding_in_single_user_mode(
+    tmp_path, monkeypatch, transport
+):
+    monkeypatch.setattr(session_store, "get_transport_mode", lambda: transport)
     monkeypatch.setenv("MCP_SINGLE_USER_MODE", "1")
 
     state_file = tmp_path / "oauth_states.json"
@@ -408,3 +413,25 @@ async def test_ensure_session_falls_back_to_non_refreshable_credential(monkeypat
     assert creds is not None
     assert creds.token == "ya29.direct"
     assert creds.refresh_token is None
+
+
+def test_store_session_skips_mcp_binding_in_stdio(tmp_path, monkeypatch):
+    """Two accounts in one stdio session must both store (second refresh used to fail)."""
+    monkeypatch.delenv("MCP_SINGLE_USER_MODE", raising=False)
+    monkeypatch.setattr(session_store, "get_transport_mode", lambda: "stdio")
+    store = OAuth21SessionStore(oauth_state_file=str(tmp_path / "oauth_states.json"))
+
+    store.store_session(
+        user_email="account-a@example.com",
+        access_token="token-a",
+        mcp_session_id="session-123",
+    )
+    store.store_session(
+        user_email="account-b@example.com",
+        access_token="token-b",
+        mcp_session_id="session-123",
+    )
+
+    assert store.get_user_by_mcp_session("session-123") is None
+    assert store.get_credentials("account-a@example.com").token == "token-a"
+    assert store.get_credentials("account-b@example.com").token == "token-b"
