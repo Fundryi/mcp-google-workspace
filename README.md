@@ -205,6 +205,8 @@ VS Code does the first step for you. Open `mcp-google-workspace.code-workspace` 
 - Several accounts in one stdio session. Upstream binds each MCP session to the first account whose token refreshes, so a second account fails an hour in with "Session already bound to a different user" and an endless sign-in loop. The binding is skipped for stdio, where `user_google_email` picks the account on every call. Remote HTTP keeps the guard.
 - No surprise browser tabs. Only the `start_google_auth` tool opens a tab. A normal tool call that finds no credentials returns the sign-in URL in its error instead. `WORKSPACE_MCP_NO_BROWSER=1` turns the tab off for `start_google_auth` too.
 - A network blip or a Google 5xx during token refresh returns an error for that one call. It no longer throws the stored token away and asks for a new sign-in. Only revoked or deleted grants do that.
+- Rate limits are retried. A 429 or a 403 `rateLimitExceeded` waits 2, 4, then 8 seconds (or Google's `Retry-After`) before the call fails. Google refuses these before doing any work, so repeating is safe for writes too.
+- One token refresh per account at a time. Parallel calls on the same account wait for the first refresh and reuse it.
 - Credential files are written to a temp file and renamed, so a crash mid-write cannot truncate a token file.
 
 After a merge, start the server with `--tools gmail` and check that the tool list still has 52 entries with a service account configured, or 45 without one (14 upstream Gmail tools, `start_google_auth`, and 37 or 30 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.

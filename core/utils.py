@@ -489,6 +489,28 @@ def encode_image_content(file_bytes: bytes, mime_type: str) -> str:
     return f"[base64_image:{mime_type}]{encoded}"
 
 
+_RATE_LIMIT_REASONS = ("rateLimitExceeded", "userRateLimitExceeded")
+
+
+def is_rate_limited(error: HttpError) -> bool:
+    """True for Gmail's per-user or per-project quota refusals."""
+    status = getattr(error.resp, "status", None)
+    if status == 429:
+        return True
+    body = getattr(error, "content", b"") or b""
+    text = body.decode("utf-8", "ignore") if isinstance(body, bytes) else str(body)
+    return status == 403 and any(r in text for r in _RATE_LIMIT_REASONS)
+
+
+def rate_limit_delay(error: HttpError, attempt: int) -> float:
+    """Honour Retry-After when Google sends it, else 2, 4, 8 seconds."""
+    header = getattr(error.resp, "get", lambda *_: None)("retry-after")
+    try:
+        return float(header)
+    except (TypeError, ValueError):
+        return float(2 ** (attempt + 1))
+
+
 def handle_http_errors(
     tool_name: str, is_read_only: bool = False, service_type: Optional[str] = None
 ):
@@ -539,6 +561,17 @@ def handle_http_errors(
                 except HttpError as error:
                     user_google_email = kwargs.get("user_google_email", "N/A")
                     error_details = str(error)
+
+                    # Fork addition: Google answers 429 (or 403 rateLimitExceeded)
+                    # before it does any work, so the call is safe to repeat for
+                    # reads and writes alike. Wait, then try again.
+                    if is_rate_limited(error) and attempt < max_retries - 1:
+                        delay = rate_limit_delay(error, attempt)
+                        logger.warning(
+                            f"Rate limited in {tool_name} for {user_google_email} on attempt {attempt + 1}. Retrying in {delay}s..."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
 
                     # Check if this is an API not enabled error
                     if (

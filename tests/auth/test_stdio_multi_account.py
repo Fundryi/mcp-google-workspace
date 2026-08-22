@@ -59,3 +59,9 @@ def test_store_credential_leaves_no_temp_file(tmp_path):
     files = sorted(p.name for p in tmp_path.iterdir())
     assert len(files) == 1 and not files[0].endswith(".tmp")
     assert json.loads((tmp_path / files[0]).read_text())["token"] == "t"
+
+
+def test_refresh_lock_is_per_account():
+    a = google_auth._refresh_lock_for("A@example.com")
+    assert a is google_auth._refresh_lock_for("a@example.com")
+    assert a is not google_auth._refresh_lock_for("b@example.com")

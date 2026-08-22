@@ -6,6 +6,7 @@ import json
 import jwt
 import logging
 import os
+import threading
 import webbrowser
 
 from typing import List, Optional, Tuple, Dict, Any
@@ -159,6 +160,17 @@ def _find_any_credentials(
 
     logger.info("[single-user] No valid credentials found via credential store")
     return None, None
+
+
+_refresh_locks: Dict[str, threading.Lock] = {}
+_refresh_locks_guard = threading.Lock()
+
+
+def _refresh_lock_for(user_google_email: Optional[str]) -> threading.Lock:
+    """One lock per account so parallel calls refresh a token once, not twice."""
+    key = (user_google_email or "").lower()
+    with _refresh_locks_guard:
+        return _refresh_locks.setdefault(key, threading.Lock())
 
 
 def _is_permanent_refresh_error(error: RefreshError) -> bool:
@@ -1210,7 +1222,16 @@ def get_credentials(
             logger.debug(
                 "[get_credentials] Refreshing token using embedded client credentials"
             )
-            credentials.refresh(Request())
+            with _refresh_lock_for(user_google_email):
+                # A parallel call may have refreshed this account while we waited.
+                if user_google_email and not is_stateless_mode():
+                    fresh = get_credential_store().get_credential(user_google_email)
+                    if fresh and fresh.valid:
+                        logger.debug(
+                            f"[get_credentials] Refreshed by a parallel call. User: '{user_google_email}'"
+                        )
+                        return fresh
+                credentials.refresh(Request())
             logger.info(
                 f"[get_credentials] Credentials refreshed successfully. User: '{user_google_email}', Session: '{session_id}'"
             )
