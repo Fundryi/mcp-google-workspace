@@ -137,3 +137,81 @@ async def test_bulk_query_dry_run_renders_its_sample_through_the_batch_path():
 
     assert "m1@example.com" in result and "subject m2" in result
     service.users().messages().batchModify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_real_run_reports_in_the_past_tense():
+    """ "Would add" over "Applied to 2 messages" makes the caller re-check."""
+    service = _batching_service()
+    service.users().messages().list().execute.return_value = {
+        "messages": [{"id": "m1"}, {"id": "m2"}]
+    }
+    service._batch.execute.side_effect = lambda: None
+
+    applied = await _unwrap(ext.modify_gmail_messages_by_query)(
+        service=service,
+        user_google_email="u@example.com",
+        query="from:a@b.com",
+        add_label_ids=["Label_1"],
+        dry_run=False,
+    )
+    assert "Added labels: Label_1" in applied
+    assert "Would" not in applied
+    assert "Applied to 2 messages" in applied
+
+    previewed = await _unwrap(ext.modify_gmail_messages_by_query)(
+        service=service,
+        user_google_email="u@example.com",
+        query="from:a@b.com",
+        add_label_ids=["Label_1"],
+    )
+    assert "Would add labels: Label_1" in previewed
+
+
+@pytest.mark.asyncio
+async def test_a_real_run_that_matched_nothing_stays_in_the_would_tense():
+    service = _batching_service()
+    service.users().messages().list().execute.return_value = {"messages": []}
+    service.users().settings().filters().get().execute.return_value = {
+        "criteria": {"from": "a@b.com"},
+        "action": {"addLabelIds": ["Label_1"]},
+    }
+
+    result = await _unwrap(ext.apply_gmail_filter_to_existing_mail)(
+        service=service,
+        user_google_email="u@example.com",
+        filter_id="f1",
+        dry_run=False,
+    )
+    assert "Would add labels" in result
+    assert "Nothing to do." in result
+
+
+@pytest.mark.asyncio
+async def test_both_bulk_tools_word_the_change_block_the_same_way():
+    service = _batching_service()
+    service.users().messages().list().execute.return_value = {
+        "messages": [{"id": "m1"}]
+    }
+    service.users().settings().filters().get().execute.return_value = {
+        "criteria": {"from": "a@b.com"},
+        "action": {"addLabelIds": ["Label_1"]},
+    }
+    service._batch.execute.side_effect = lambda: None
+
+    by_query = await _unwrap(ext.modify_gmail_messages_by_query)(
+        service=service,
+        user_google_email="u@example.com",
+        query="from:a@b.com",
+        add_label_ids=["Label_1"],
+        dry_run=False,
+    )
+    by_filter = await _unwrap(ext.apply_gmail_filter_to_existing_mail)(
+        service=service,
+        user_google_email="u@example.com",
+        filter_id="f1",
+        dry_run=False,
+    )
+    for line in ("Added labels: Label_1", "Removed labels: (none)"):
+        assert line in by_query, line
+        assert line in by_filter, line

@@ -1397,6 +1397,25 @@ async def _message_metadata(service, message_ids: List[str]) -> List[Dict[str, A
     return [by_id[mid] for mid in message_ids if mid in by_id]
 
 
+def _label_change_lines(
+    add_label_ids: Optional[List[str]],
+    remove_label_ids: Optional[List[str]],
+    pending: bool,
+) -> List[str]:
+    """Reports the label changes in the tense that actually applies.
+
+    "Would add" over a line saying "Applied to 2 messages" reads as a
+    contradiction, and an agent then has to re-read the mailbox to find out
+    which one is true. Pending covers both a dry run and a real run that
+    matched nothing, because neither one changed anything.
+    """
+    added, removed = ("Would add", "Would remove") if pending else ("Added", "Removed")
+    return [
+        f"{added} labels: {', '.join(add_label_ids or []) or '(none)'}",
+        f"{removed} labels: {', '.join(remove_label_ids or []) or '(none)'}",
+    ]
+
+
 def _sender_domain(sender: str) -> str:
     """Pulls the domain out of a From header, or '(unknown)'."""
     address = sender.rsplit("<", 1)[-1].rstrip(">")
@@ -1466,9 +1485,7 @@ async def apply_gmail_filter_to_existing_mail(
         f"Query: {query}",
         f"Matches: {len(message_ids)}"
         + (f" (capped at {max_messages})" if len(message_ids) == max_messages else ""),
-        f"Would add labels: {', '.join(add_label_ids) or '(none)'}",
-        f"Would remove labels: {', '.join(remove_label_ids) or '(none)'}",
-    ]
+    ] + _label_change_lines(add_label_ids, remove_label_ids, dry_run or not message_ids)
     if not message_ids:
         return "\n".join(header + ["", "Nothing to do."])
 
@@ -1545,9 +1562,7 @@ async def modify_gmail_messages_by_query(
         f"Query: {query}",
         f"Matches: {len(message_ids)}"
         + (f" (capped at {max_messages})" if len(message_ids) == max_messages else ""),
-        f"Add labels: {', '.join(add_label_ids or []) or '(none)'}",
-        f"Remove labels: {', '.join(remove_label_ids or []) or '(none)'}",
-    ]
+    ] + _label_change_lines(add_label_ids, remove_label_ids, dry_run or not message_ids)
     if not message_ids:
         return "\n".join(header + ["", "Nothing to do."])
 

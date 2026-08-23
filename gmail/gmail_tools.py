@@ -3943,13 +3943,18 @@ async def manage_gmail_label(
             service.users().labels().delete(userId="me", id=label_id).execute
         )
         # Deleting a label strips it from every message it was on, and Gmail
-        # keeps no record of which ones. Say how much was lost.
+        # keeps no record of which ones. Always state the number, zero included:
+        # a caller checking whether a delete was safe should read the count,
+        # not have to infer it from a missing line.
         cost = (
-            f" It was on {message_count} messages; that link is gone and cannot be restored."
+            "that link is gone and cannot be restored."
             if message_count
-            else ""
+            else "nothing was unlinked."
         )
-        return f"Label '{label_name}' (ID: {label_id}) deleted successfully!{cost}"
+        return (
+            f"Label '{label_name}' (ID: {label_id}) deleted successfully!\n"
+            f"  It was on {message_count} messages; {cost}"
+        )
 
 
 @server.tool(

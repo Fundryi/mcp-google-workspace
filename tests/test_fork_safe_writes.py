@@ -70,6 +70,24 @@ async def test_label_delete_reports_what_it_took_with_it():
     assert "42 messages" in result
 
 
+@pytest.mark.asyncio
+async def test_label_delete_states_the_count_even_when_it_is_zero():
+    # An absent line is not an answer. A caller checking whether a delete was
+    # safe should read the number, not infer it.
+    service = Mock()
+    service.users().labels().get().execute.return_value = {
+        "id": "Label_9",
+        "name": "zz-probe",
+    }
+    result = await _unwrap(gmail.manage_gmail_label)(
+        service=service,
+        user_google_email="u@example.com",
+        action="delete",
+        label_id="Label_9",
+    )
+    assert "0 messages" in result
+
+
 # --- Gmail: filters --------------------------------------------------------
 
 
