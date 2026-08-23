@@ -130,20 +130,15 @@ async def manage_drive_trash(
         scoped_query = f"({query}) and trashed = {str(not trashed).lower()}"
         files = await _drive_files_matching(service, scoped_query, max_files)
     else:
-        files = list(
-            await asyncio.gather(
-                *(
-                    asyncio.to_thread(
-                        service.files()
-                        .get(
-                            fileId=file_id, fields=_TRASH_FIELDS, supportsAllDrives=True
-                        )
-                        .execute
-                    )
-                    for file_id in file_ids[:max_files]
+        files = []
+        for file_id in file_ids[:max_files]:
+            files.append(
+                await asyncio.to_thread(
+                    service.files()
+                    .get(fileId=file_id, fields=_TRASH_FIELDS, supportsAllDrives=True)
+                    .execute
                 )
             )
-        )
 
     header = [
         f"Action: {action}",
@@ -163,11 +158,15 @@ async def manage_drive_trash(
             + ["", "Set dry_run to False to apply this."]
         )
 
-    # One file the user cannot trash must not hide what happened to the rest,
-    # so failures come back as values and are reported per file.
-    outcomes = await asyncio.gather(
-        *(
-            asyncio.to_thread(
+    # One at a time on purpose. The service holds a single httplib2 connection
+    # and it is not thread safe, so a parallel fan-out here fails with an SSL
+    # error or a read timeout. A file the user cannot trash must not hide what
+    # happened to the rest either, so each failure is caught and reported.
+    moved: List[Dict[str, Any]] = []
+    failed: List[Any] = []
+    for file in files:
+        try:
+            await asyncio.to_thread(
                 service.files()
                 .update(
                     fileId=file["id"],
@@ -176,20 +175,9 @@ async def manage_drive_trash(
                 )
                 .execute
             )
-            for file in files
-        ),
-        return_exceptions=True,
-    )
-    moved = [
-        file
-        for file, outcome in zip(files, outcomes)
-        if not isinstance(outcome, Exception)
-    ]
-    failed = [
-        (file, outcome)
-        for file, outcome in zip(files, outcomes)
-        if isinstance(outcome, Exception)
-    ]
+            moved.append(file)
+        except Exception as exc:
+            failed.append((file, exc))
     verb = "moved to the trash" if trashed else "restored from the trash"
     lines = (
         header

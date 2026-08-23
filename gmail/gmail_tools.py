@@ -3607,6 +3607,55 @@ def _validate_label_color(color: JsonDict) -> None:
         )
 
 
+async def _detailed_labels(service, labels: List[JsonDict]) -> List[JsonDict]:
+    """Fills in color and message counts, which labels.list does not return.
+
+    One labels.get per label, sent through Gmail's batch endpoint in chunks so
+    it stays one HTTP request at a time. The service holds a single httplib2
+    connection and it is not thread safe, so a parallel fan-out here fails with
+    an SSL error or a read timeout once a mailbox has enough labels.
+    """
+    detailed_by_id: Dict[str, JsonDict] = {}
+
+    for start in range(0, len(labels), GMAIL_SEARCH_HEADER_BATCH_SIZE):
+        if start:
+            await asyncio.sleep(GMAIL_REQUEST_DELAY)
+        chunk = labels[start : start + GMAIL_SEARCH_HEADER_BATCH_SIZE]
+
+        def _collect(request_id, response, exception):
+            if response and not exception:
+                detailed_by_id[request_id] = response
+            elif exception:
+                logger.warning(f"[list_gmail_labels] {request_id}: {exception}")
+
+        try:
+            batch = service.new_batch_http_request(callback=_collect)
+            for label in chunk:
+                batch.add(
+                    service.users().labels().get(userId="me", id=label["id"]),
+                    request_id=label["id"],
+                )
+            await asyncio.to_thread(batch.execute)
+        except Exception as batch_error:
+            logger.warning(
+                f"[list_gmail_labels] Batch failed, going one at a time: {batch_error}"
+            )
+            for label in chunk:
+                try:
+                    detailed_by_id[label["id"]] = await asyncio.to_thread(
+                        service.users()
+                        .labels()
+                        .get(userId="me", id=label["id"])
+                        .execute
+                    )
+                except Exception as exc:
+                    logger.warning(f"[list_gmail_labels] {label['id']}: {exc}")
+                await asyncio.sleep(GMAIL_REQUEST_DELAY)
+
+    # A label we could not read keeps its short form rather than vanishing.
+    return [detailed_by_id.get(label["id"], label) for label in labels]
+
+
 async def _label_names(service) -> Dict[str, str]:
     """Maps label id to name. Returns {} if the caller's scope cannot read labels."""
     try:
@@ -3754,19 +3803,7 @@ async def list_gmail_labels(
     labels = response.get("labels", [])
 
     if detailed and labels:
-        labels = list(
-            await asyncio.gather(
-                *(
-                    asyncio.to_thread(
-                        service.users()
-                        .labels()
-                        .get(userId="me", id=label["id"])
-                        .execute
-                    )
-                    for label in labels
-                )
-            )
-        )
+        labels = await _detailed_labels(service, labels)
 
     if not labels:
         return "No labels found."
@@ -4087,15 +4124,11 @@ async def modify_gmail_message_labels(
     message_id: str,
     add_label_ids: Annotated[
         Optional[StringList],
-        Field(
-            json_schema_extra={"type": "array", "items": {"type": "string"}}
-        ),
+        Field(json_schema_extra={"type": "array", "items": {"type": "string"}}),
     ] = None,
     remove_label_ids: Annotated[
         Optional[StringList],
-        Field(
-            json_schema_extra={"type": "array", "items": {"type": "string"}}
-        ),
+        Field(json_schema_extra={"type": "array", "items": {"type": "string"}}),
     ] = None,
 ) -> str:
     """
@@ -4157,15 +4190,11 @@ async def batch_modify_gmail_message_labels(
     message_ids: StringList,
     add_label_ids: Annotated[
         Optional[StringList],
-        Field(
-            json_schema_extra={"type": "array", "items": {"type": "string"}}
-        ),
+        Field(json_schema_extra={"type": "array", "items": {"type": "string"}}),
     ] = None,
     remove_label_ids: Annotated[
         Optional[StringList],
-        Field(
-            json_schema_extra={"type": "array", "items": {"type": "string"}}
-        ),
+        Field(json_schema_extra={"type": "array", "items": {"type": "string"}}),
     ] = None,
 ) -> str:
     """

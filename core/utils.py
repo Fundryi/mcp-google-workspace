@@ -550,9 +550,17 @@ def handle_http_errors(
                         logger.error(
                             f"SSL error in {tool_name} on final attempt: {e}. Raising exception."
                         )
+                        # Say what really happened. Reporting the retry
+                        # ceiling on a call that ran once, or calling a
+                        # repeatable failure transient, hides the real fault.
+                        attempts = attempt + 1
                         raise TransientNetworkError(
-                            f"A transient SSL error occurred in '{tool_name}' after {max_retries} attempts. "
-                            "This is likely a temporary network or certificate issue. Please try again shortly."
+                            f"SSL error in '{tool_name}' after "
+                            f"{attempts} attempt{'s' if attempts > 1 else ''}"
+                            + ("" if is_read_only else " (writes are not retried)")
+                            + f": {e}. If it repeats on every call it is not the "
+                            "network; check for parallel calls sharing one API "
+                            "connection."
                         ) from e
                 except UserInputError as e:
                     message = f"Input error in {tool_name}: {e}"

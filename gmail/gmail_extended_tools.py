@@ -32,7 +32,13 @@ from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import StringList, handle_http_errors
 from gmail.gmail_helpers import html_to_text_preserving_breaks
-from gmail.gmail_tools import _extract_headers, _extract_message_body, _label_names
+from gmail.gmail_tools import (
+    GMAIL_REQUEST_DELAY,
+    GMAIL_SEARCH_HEADER_BATCH_SIZE,
+    _extract_headers,
+    _extract_message_body,
+    _label_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1334,26 +1340,61 @@ async def _list_message_ids(service, query: str, limit: int) -> List[str]:
     return ids[:limit]
 
 
-async def _message_metadata(service, message_ids: List[str]) -> List[Dict[str, Any]]:
-    """Fetches From, Subject, Date and label ids for each message, in parallel."""
-    return list(
-        await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    service.users()
-                    .messages()
-                    .get(
-                        userId="me",
-                        id=message_id,
-                        format="metadata",
-                        metadataHeaders=["From", "Subject", "Date"],
-                    )
-                    .execute
-                )
-                for message_id in message_ids
-            )
+def _metadata_request(service, message_id: str):
+    """One messages.get for headers and label ids, no body."""
+    return (
+        service.users()
+        .messages()
+        .get(
+            userId="me",
+            id=message_id,
+            format="metadata",
+            metadataHeaders=["From", "Subject", "Date"],
         )
     )
+
+
+async def _message_metadata(service, message_ids: List[str]) -> List[Dict[str, Any]]:
+    """Fetches From, Subject, Date and label ids for each message.
+
+    Goes through Gmail's batch endpoint, one HTTP request per chunk, and drops
+    to one request at a time if that fails. Never in parallel: the service holds
+    a single httplib2 connection that is not thread safe, and two threads using
+    it produce an SSL error or a read timeout that names nothing useful.
+    """
+    by_id: Dict[str, Dict[str, Any]] = {}
+
+    for start in range(0, len(message_ids), GMAIL_SEARCH_HEADER_BATCH_SIZE):
+        if start:
+            await asyncio.sleep(GMAIL_REQUEST_DELAY)
+        chunk = message_ids[start : start + GMAIL_SEARCH_HEADER_BATCH_SIZE]
+
+        def _collect(request_id, response, exception):
+            if response and not exception:
+                by_id[request_id] = response
+            elif exception:
+                logger.warning(f"[_message_metadata] {request_id}: {exception}")
+
+        try:
+            batch = service.new_batch_http_request(callback=_collect)
+            for message_id in chunk:
+                batch.add(_metadata_request(service, message_id), request_id=message_id)
+            await asyncio.to_thread(batch.execute)
+        except Exception as batch_error:
+            logger.warning(
+                f"[_message_metadata] Batch failed, going one at a time: {batch_error}"
+            )
+            for message_id in chunk:
+                try:
+                    by_id[message_id] = await asyncio.to_thread(
+                        _metadata_request(service, message_id).execute
+                    )
+                except Exception as exc:
+                    logger.warning(f"[_message_metadata] {message_id}: {exc}")
+                await asyncio.sleep(GMAIL_REQUEST_DELAY)
+
+    # Keep the caller's order, and skip anything Gmail would not give us.
+    return [by_id[mid] for mid in message_ids if mid in by_id]
 
 
 def _sender_domain(sender: str) -> str:
