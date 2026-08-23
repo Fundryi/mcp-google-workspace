@@ -39,6 +39,7 @@ Create, update, or delete a calendar event.
 | start_time | string | for create | | RFC 3339 format |
 | end_time | string | for create | | RFC 3339 format |
 | event_id | string | for update/delete | | Event ID |
+| confirm_recurring | boolean | no | false | Required as true to delete a repeating event, which removes every instance. To drop one instance, pass that instance's own event_id |
 | calendar_id | string | no | primary | |
 | description | string | no | | Event description |
 | location | string | no | | Event location |
@@ -58,6 +59,60 @@ Create, update, or delete a calendar event.
 **Reminder format** (each item is a dict):
 - `{"method": "email", "minutes": 30}` -- email reminder 30 minutes before
 - `{"method": "popup", "minutes": 10}` -- popup reminder 10 minutes before
+
+---
+
+## Calendar Administration
+
+### get_calendar_settings
+The account's own settings: time zone, locale, week start, 12 or 24 hour clock, invitation handling. Read these before writing times, so the numbers mean what you think.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| setting_id | string | no | | One setting, for example "timezone". Omit for all |
+
+
+### manage_calendar
+Reads, renames, deletes or empties a calendar itself, not its events. An update writes only the fields you pass.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| action | string | yes | | "get", "update", "delete" or "clear" |
+| calendar_id | string | yes | | "primary" or a secondary calendar's address |
+| summary, description, location, timezone | string | no | | Update only |
+| confirm | boolean | no | false | Required as true for delete and clear |
+
+`clear` works on "primary" only and empties it. `delete` removes a secondary calendar and its events. To stop seeing a calendar you do not own, unsubscribe instead.
+
+### manage_calendar_access
+Lists who a calendar is shared with, shares it, or takes access away.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| action | string | yes | | "list", "grant" or "revoke" |
+| calendar_id | string | no | primary | |
+| scope_type | string | no | user | "user", "group", "domain" or "default". "default" means the whole internet |
+| scope_value | string | conditional | | Address or domain. Not needed for "default" |
+| role | string | no | reader | "none", "freeBusyReader", "reader", "writer" or "owner" |
+| rule_id | string | for revoke | | Take it from the list output |
+| send_notifications | boolean | no | true | Whether Google mails the person |
+
+A grant that reaches a whole domain or the whole internet says so in the result.
+
+### manage_calendar_subscription
+Your own calendar list: which calendars you follow, your name for them, their color, and whether they show in the grid. It never changes the calendar itself, so unsubscribing is always reversible.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| action | string | yes | | "list", "subscribe", "unsubscribe" or "update" |
+| calendar_id | string | conditional | | Required for everything except "list" |
+| summary_override | string | no | | Your own name for it. Update only |
+| color_id | string | no | | Calendar color id. Update only |
+| hidden, selected | boolean | no | | Update only |
 
 ---
 

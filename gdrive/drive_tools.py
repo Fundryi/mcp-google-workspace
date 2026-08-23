@@ -37,6 +37,7 @@ from core.utils import (
 from core.server import server
 from core.config import get_transport_mode
 from gdrive.drive_helpers import (
+    public_share_warning,
     DRIVE_QUERY_PATTERNS,
     FOLDER_MIME_TYPE,
     GOOGLE_APPS_MIME_PREFIX,
@@ -2344,6 +2345,7 @@ async def manage_drive_access(
                 "",
                 f"View link: {file_metadata.get('webViewLink', 'N/A')}",
             ]
+            + public_share_warning(share_type, allow_file_discovery)
         )
 
     # --- grant_batch: share with multiple recipients ---
@@ -2834,5 +2836,11 @@ async def set_drive_file_permissions(
     else:
         output_parts.append("  - No changes (already configured)")
     output_parts.extend(["", f"View link: {file_metadata.get('webViewLink', 'N/A')}"])
+    if link_sharing is not None and link_sharing != "off":
+        output_parts.extend(public_share_warning("anyone", False))
 
     return "\n".join(output_parts)
+
+
+# Fork addition: extra Drive tools live in their own module.
+import gdrive.drive_extended_tools  # noqa: E402,F401

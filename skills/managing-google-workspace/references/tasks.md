@@ -32,6 +32,7 @@ Create, update, delete, or clear completed tasks from a task list.
 | user_google_email | string | yes | | |
 | task_list_id | string | conditional | | Required for `update`, `delete`, `clear_completed` |
 | title | string | conditional | | Required for `create` and `update` |
+| confirm | boolean | no | false | Required as true to delete a list that still holds tasks. They are deleted with it and cannot be restored |
 
 ---
 

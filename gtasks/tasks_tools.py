@@ -286,16 +286,53 @@ async def _update_task_list_impl(
 
 
 async def _delete_task_list_impl(
-    service: Resource, user_google_email: str, task_list_id: str
+    service: Resource,
+    user_google_email: str,
+    task_list_id: str,
+    confirm: bool = False,
 ) -> str:
     """Implementation for deleting a task list."""
     logger.info(
         f"[delete_task_list] Invoked. Email: '{user_google_email}', Task List ID: {task_list_id}"
     )
 
+    # The list takes its tasks with it and none of it can be restored, so count
+    # them first and make the caller say yes to a list that is not empty.
+    # showHidden and showAssigned are off by default, so without them a list of
+    # completed or assigned tasks looks empty and deletes with no question.
+    task_count = 0
+    page_token = None
+    while True:
+        page = await asyncio.to_thread(
+            service.tasks()
+            .list(
+                tasklist=task_list_id,
+                maxResults=100,
+                showHidden=True,
+                showCompleted=True,
+                showAssigned=True,
+                pageToken=page_token,
+            )
+            .execute
+        )
+        task_count += len(page.get("items", []))
+        page_token = page.get("nextPageToken")
+        if not page_token:
+            break
+    if task_count and not confirm:
+        raise UserInputError(
+            f"Task list {task_list_id} still holds {task_count} tasks, hidden and "
+            "assigned ones included. Deleting the list deletes all of them for "
+            "good, and an assigned task's original in Docs or Chat goes with it. "
+            "Call again with confirm=True, or clear the tasks first."
+        )
+
     await asyncio.to_thread(service.tasklists().delete(tasklist=task_list_id).execute)
 
-    response = f"Task list {task_list_id} has been deleted for {user_google_email}. All tasks in this list have also been deleted."
+    response = (
+        f"Task list {task_list_id} has been deleted for {user_google_email}. "
+        f"{task_count} tasks in it were deleted too."
+    )
 
     logger.info(f"Deleted task list {task_list_id} for {user_google_email}")
     return response
@@ -339,6 +376,7 @@ async def manage_task_list(
     action: str,
     task_list_id: Optional[str] = None,
     title: Optional[str] = None,
+    confirm: bool = False,
 ) -> str:
     """
     Manage task lists: create, update, delete, or clear completed tasks.
@@ -348,6 +386,7 @@ async def manage_task_list(
         action (str): The action to perform. Must be one of: "create", "update", "delete", "clear_completed".
         task_list_id (Optional[str]): The ID of the task list. Required for "update", "delete", and "clear_completed" actions.
         title (Optional[str]): The title for the task list. Required for "create" and "update" actions.
+        confirm (bool): Required as True to delete a task list that still holds tasks, because they are deleted with it and cannot be restored.
 
     Returns:
         str: Result of the requested action.
@@ -384,7 +423,9 @@ async def manage_task_list(
     if action == "delete":
         if not task_list_id:
             raise UserInputError("'task_list_id' is required for the 'delete' action.")
-        return await _delete_task_list_impl(service, user_google_email, task_list_id)
+        return await _delete_task_list_impl(
+            service, user_google_email, task_list_id, confirm
+        )
 
     # action == "clear_completed"
     if not task_list_id:

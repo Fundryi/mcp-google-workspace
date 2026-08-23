@@ -102,6 +102,19 @@ Create, update, delete a contact group, or modify its members.
 
 ---
 
+### search_other_contacts
+Searches the addresses Google saved from your mail but that were never added to Contacts. Use it when `search_contacts` finds nothing for someone you clearly write to.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| query | string | yes | | Matches the **beginning** of names and addresses: "smi" finds "Smith", "mith" does not |
+| max_results | integer | no | 30 | 30 is Google's own ceiling |
+
+Works for private and Workspace accounts.
+
+---
+
 ## Tips
 
 **Avoid duplicates**: Use `search_contacts` to check whether a contact already exists before creating a new one. Search matches on name, email, and phone number.

@@ -42,6 +42,7 @@ from auth.scopes import (
     DRIVE_SCOPE,
     DRIVE_READONLY_SCOPE,
     DRIVE_FILE_SCOPE,
+    DRIVE_ACTIVITY_READONLY_SCOPE,
     DOCS_READONLY_SCOPE,
     DOCS_WRITE_SCOPE,
     CALENDAR_SCOPE,
@@ -53,6 +54,7 @@ from auth.scopes import (
     CHAT_WRITE_SCOPE,
     CHAT_SPACES_SCOPE,
     CHAT_SPACES_READONLY_SCOPE,
+    CHAT_MEMBERSHIPS_READONLY_SCOPE,
     FORMS_BODY_SCOPE,
     FORMS_BODY_READONLY_SCOPE,
     FORMS_RESPONSES_READONLY_SCOPE,
@@ -62,6 +64,7 @@ from auth.scopes import (
     TASKS_READONLY_SCOPE,
     CONTACTS_SCOPE,
     CONTACTS_READONLY_SCOPE,
+    CONTACTS_OTHER_READONLY_SCOPE,
     CUSTOM_SEARCH_SCOPE,
     SCRIPT_PROJECTS_SCOPE,
     SCRIPT_PROJECTS_READONLY_SCOPE,
@@ -577,6 +580,8 @@ SERVICE_CONFIGS = {
     "people": {"service": "people", "version": "v1"},
     "customsearch": {"service": "customsearch", "version": "v1"},
     "script": {"service": "script", "version": "v1"},
+    # Fork: the Drive Activity API is its own API, not part of drive v3.
+    "driveactivity": {"service": "driveactivity", "version": "v2"},
 }
 
 
@@ -594,6 +599,7 @@ SCOPE_GROUPS = {
     "drive_full": DRIVE_SCOPE,
     "drive_read": DRIVE_READONLY_SCOPE,
     "drive_file": DRIVE_FILE_SCOPE,
+    "drive_activity_read": DRIVE_ACTIVITY_READONLY_SCOPE,
     # Docs scopes
     "docs_read": DOCS_READONLY_SCOPE,
     "docs_write": DOCS_WRITE_SCOPE,
@@ -606,6 +612,7 @@ SCOPE_GROUPS = {
     "sheets_write": SHEETS_WRITE_SCOPE,
     # Chat scopes
     "chat_read": CHAT_READONLY_SCOPE,
+    "chat_memberships_read": CHAT_MEMBERSHIPS_READONLY_SCOPE,
     "chat_write": CHAT_WRITE_SCOPE,
     "chat_spaces": CHAT_SPACES_SCOPE,
     "chat_spaces_readonly": CHAT_SPACES_READONLY_SCOPE,
@@ -622,6 +629,7 @@ SCOPE_GROUPS = {
     # Contacts scopes
     "contacts": CONTACTS_SCOPE,
     "contacts_read": CONTACTS_READONLY_SCOPE,
+    "contacts_other_read": CONTACTS_OTHER_READONLY_SCOPE,
     # Custom Search scope
     "customsearch": CUSTOM_SEARCH_SCOPE,
     # Apps Script scopes

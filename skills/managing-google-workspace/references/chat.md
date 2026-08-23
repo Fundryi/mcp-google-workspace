@@ -74,6 +74,29 @@ Downloads an attachment from a Chat message. Returns a local file path (stdio mo
 
 ---
 
+## Members and Edits
+
+### list_chat_members
+Who is in a space, with their role and membership state. **Workspace accounts only**; a private gmail.com address is refused before the call.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| space_name | string | yes | | "spaces/AAAA..." or just the id |
+| include_groups | boolean | no | true | Include Google Group memberships |
+| show_invited | boolean | no | true | Include people invited but not joined |
+
+### update_chat_message
+Rewrites the text of a message this account already sent, instead of posting a correction underneath. **Workspace accounts only.** Only your own messages can be changed, and the space sees the edit.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| message_name | string | yes | | "spaces/AAA/messages/BBB", as returned by get_messages |
+| text | string | yes | | Replaces the old text completely |
+
+---
+
 ## Tips
 
 **Space IDs**: Call `list_spaces` first to discover available spaces and their IDs. You need the space ID for all message operations.

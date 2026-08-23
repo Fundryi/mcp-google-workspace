@@ -123,9 +123,10 @@ List all labels with IDs, names, and types.
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
 | user_google_email | string | yes | | |
+| detailed | boolean | no | false | Also return colors and message counts. Costs one API call per label; the plain list call does not carry those fields |
 
 ### manage_gmail_label
-Create, update, or delete a label.
+Create, update, or delete a label. An update writes only the fields you pass; everything else keeps its value, colors included.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
@@ -133,8 +134,11 @@ Create, update, or delete a label.
 | action | string | yes | | "create", "update", or "delete" |
 | name | string | conditional | | Required for create, optional for update |
 | label_id | string | conditional | | Required for update and delete |
-| label_list_visibility | string | no | "labelShow" | "labelShow" or "labelHide" |
-| message_list_visibility | string | no | "show" | "show" or "hide" |
+| label_list_visibility | string | no | null | "labelShow" or "labelHide". null leaves it alone; create defaults to "labelShow" |
+| message_list_visibility | string | no | null | "show" or "hide". null leaves it alone; create defaults to "show" |
+| color | object | no | null | `{"backgroundColor": hex, "textColor": hex}`. Both are required together. Gmail takes only its own 113-color palette; anything else is rejected before the call |
+
+Deleting a label strips it off every message it was on and the result says how many those were.
 
 ### modify_gmail_message_labels
 Add or remove labels on a single message.
@@ -175,19 +179,66 @@ List all filters with their criteria and actions.
 | user_google_email | string | yes | | |
 
 ### manage_gmail_filter
-Create or delete a filter.
+Create, replace or delete a filter. Gmail has no filter update, so `replace` creates the new one first and deletes the old one after. Every result echoes the filter Gmail stored, and names anything Gmail added on its own.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
 | user_google_email | string | yes | | |
-| action | string | yes | | "create" or "delete" |
-| criteria | object | for create | | Filter criteria (see below) |
-| filter_action | object | for create | | Actions to apply (see below) |
-| filter_id | string | for delete | | ID of filter to remove |
+| action | string | yes | | "create", "replace" or "delete" |
+| criteria | object | for create/replace | | Filter criteria (see below) |
+| filter_action | object | for create/replace | | Actions to apply (see below) |
+| filter_id | string | for replace/delete | | The filter to swap out, or to remove |
 
 **Criteria object keys:** `from`, `to`, `subject`, `query`, `negatedQuery`, `hasAttachment` (bool), `excludeChats` (bool), `size` (int), `sizeComparison` (string).
 
 **Filter action object keys:** `addLabelIds` (array), `removeLabelIds` (array), `forward` (string).
+
+### apply_gmail_filter_to_existing_mail
+Filters only run on arriving mail. This runs an existing filter's criteria as a search and applies its label actions to what is already there.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| filter_id | string | yes | | The filter to replay |
+| dry_run | boolean | no | true | Reports the match count and a sample, changes nothing |
+| scope | string | no | all | "all" or "inbox". Spam and trash are left out either way |
+| apply_label_actions_only | boolean | no | true | False also applies removeLabelIds, which can archive in bulk with no undo |
+| max_messages | integer | no | 2000 | Safety cap |
+
+### modify_gmail_messages_by_query
+Adds or removes labels on every message matching a search query.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| query | string | yes | | Gmail search query. An empty one is refused |
+| add_label_ids | array | conditional | | At least one of add/remove is required |
+| remove_label_ids | array | conditional | | Removing INBOX archives |
+| dry_run | boolean | no | true | Reports matches and a sample, changes nothing |
+| max_messages | integer | no | 2000 | Safety cap |
+
+### summarize_gmail_messages
+Sender, subject, date and label names for matching messages, in one call. No bodies. Use it to see who writes to a mailbox before planning labels or filters.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| query | string | no | in:inbox | Gmail search query |
+| max_results | integer | no | 100 | |
+| group_by_sender_domain | boolean | no | false | Returns a count per domain instead of one line per message |
+
+### list_gmail_history
+What changed in the mailbox since a history ID: messages added or deleted, labels put on or taken off. Cheaper than searching the mailbox again.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| start_history_id | string | yes | | From get_gmail_profile or watch_gmail_mailbox |
+| history_types | array | no | | Any of messageAdded, messageDeleted, labelAdded, labelRemoved |
+| label_id | string | no | | Only changes touching this label |
+| max_changes | integer | no | 200 | Safety cap |
+
+Gmail keeps history for about a week. An older ID returns 404, which means read the mailbox in full instead. The result hands back the history ID to use next time.
 
 ---
 

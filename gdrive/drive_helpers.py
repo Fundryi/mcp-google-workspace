@@ -754,3 +754,23 @@ async def _resolve_import_media(
         chunksize=UPLOAD_CHUNK_SIZE_BYTES,
     )
     return media, source_mime_type, remote_file_data
+
+
+def public_share_warning(
+    share_type: str, allow_file_discovery: Optional[bool] = None
+) -> List[str]:
+    """Spells out a share that reaches beyond named people.
+
+    "anyone" and "domain" shares read like any other permission in an API
+    result, so the caller cannot tell that a file just went public. Say it.
+    """
+    if share_type == "anyone":
+        found = (
+            " It can also turn up in web search results."
+            if allow_file_discovery
+            else " It is not listed in search, but the link needs no sign-in."
+        )
+        return ["", f"\u26a0 This file is now open to anyone with the link.{found}"]
+    if share_type == "domain":
+        return ["", "\u26a0 This file is now open to everyone in that domain."]
+    return []

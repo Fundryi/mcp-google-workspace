@@ -740,3 +740,7 @@ async def download_chat_attachment(
         f"[download_chat_attachment] Saved {size_kb:.1f} KB attachment to {result.path}"
     )
     return "\n".join(result_lines)
+
+
+# Fork addition: extra Chat tools live in their own module.
+import gchat.chat_extended_tools  # noqa: E402,F401

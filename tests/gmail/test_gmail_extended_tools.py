@@ -65,7 +65,7 @@ def test_every_extended_tool_is_registered_exactly_once():
         assert name in components, name
     for name in ext.DELEGATED_TOOL_NAMES:
         assert name not in components, name
-    assert len(set(ext.EXTENDED_TOOL_NAMES)) == len(ext.EXTENDED_TOOL_NAMES) == 37
+    assert len(set(ext.EXTENDED_TOOL_NAMES)) == len(ext.EXTENDED_TOOL_NAMES) == 41
     assert len(ext.DELEGATED_TOOL_NAMES) == 7
 
 
@@ -294,3 +294,123 @@ async def test_list_accounts_reports_type_and_capabilities(monkeypatch):
     out = await _unwrap(ext.list_gmail_accounts)()
     assert "me@gmail.com | private, oauth | core tools" in out
     assert "boss@firma.example | workspace, oauth | core tools" in out
+
+
+# --- label updates must not wipe what the caller did not pass ---------------
+
+
+@pytest.mark.asyncio
+async def test_label_update_keeps_color_and_visibility():
+    service = Mock()
+    service.users().labels().get().execute.return_value = {
+        "id": "Label_1",
+        "name": "Old",
+        "labelListVisibility": "labelHide",
+        "messageListVisibility": "hide",
+        "color": {"backgroundColor": "#fb4c2f", "textColor": "#ffffff"},
+        "messagesTotal": 12,
+    }
+    service.users().labels().update().execute.return_value = {
+        "id": "Label_1",
+        "name": "New",
+    }
+    await _unwrap(gmail.gmail_tools.manage_gmail_label)(
+        service=service,
+        user_google_email="u@example.com",
+        action="update",
+        label_id="Label_1",
+        name="New",
+    )
+    body = service.users().labels().update.call_args.kwargs["body"]
+    assert body["name"] == "New"
+    assert body["color"] == {"backgroundColor": "#fb4c2f", "textColor": "#ffffff"}
+    assert body["labelListVisibility"] == "labelHide"
+    assert body["messageListVisibility"] == "hide"
+    assert "messagesTotal" not in body  # read-only field, Gmail rejects it
+
+
+@pytest.mark.asyncio
+async def test_label_update_writes_what_was_passed():
+    service = Mock()
+    service.users().labels().get().execute.return_value = {
+        "id": "Label_1",
+        "name": "Old",
+        "color": {"backgroundColor": "#000000", "textColor": "#ffffff"},
+    }
+    service.users().labels().update().execute.return_value = {
+        "id": "Label_1",
+        "name": "Old",
+    }
+    await _unwrap(gmail.gmail_tools.manage_gmail_label)(
+        service=service,
+        user_google_email="u@example.com",
+        action="update",
+        label_id="Label_1",
+        color={"backgroundColor": "#ffffff", "textColor": "#000000"},
+        message_list_visibility="hide",
+    )
+    body = service.users().labels().update.call_args.kwargs["body"]
+    assert body["color"]["backgroundColor"] == "#ffffff"
+    assert body["messageListVisibility"] == "hide"
+    assert body["name"] == "Old"
+
+
+# --- filter replay ---------------------------------------------------------
+
+
+def test_filter_criteria_to_query():
+    # Values stay literal: unquoted, "alpha OR beta" would become Gmail's OR.
+    assert (
+        ext._filter_criteria_to_query(
+            {"from": "a@b.com", "hasAttachment": True, "negatedQuery": "in:chats"}
+        )
+        == 'from:"a@b.com" has:attachment -(in:chats)'
+    )
+    assert ext._filter_criteria_to_query({"subject": "alpha OR beta"}) == (
+        'subject:"alpha OR beta"'
+    )
+    # A filter's "to" matches To, Cc and Bcc; Gmail's to: operator does not.
+    assert ext._filter_criteria_to_query({"to": "team@b.com"}) == (
+        '(to:"team@b.com" OR cc:"team@b.com" OR bcc:"team@b.com")'
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_filter_dry_run_changes_nothing():
+    service = Mock()
+    service.users().settings().filters().get().execute.return_value = {
+        "criteria": {"from": "a@b.com"},
+        "action": {"addLabelIds": ["Label_1"], "removeLabelIds": ["INBOX"]},
+    }
+    service.users().messages().list().execute.return_value = {
+        "messages": [{"id": "m1"}]
+    }
+    service.users().messages().get().execute.return_value = {"payload": {"headers": []}}
+    result = await _unwrap(ext.apply_gmail_filter_to_existing_mail)(
+        service=service, user_google_email="u@example.com", filter_id="f1"
+    )
+    service.users().messages().batchModify.assert_not_called()
+    assert "Matches: 1" in result
+    assert "Would remove labels: (none)" in result  # label actions only by default
+
+
+@pytest.mark.asyncio
+async def test_apply_filter_applies_adds_only_by_default():
+    service = Mock()
+    service.users().settings().filters().get().execute.return_value = {
+        "criteria": {"from": "a@b.com"},
+        "action": {"addLabelIds": ["Label_1"], "removeLabelIds": ["INBOX"]},
+    }
+    service.users().messages().list().execute.return_value = {
+        "messages": [{"id": "m1"}, {"id": "m2"}]
+    }
+    await _unwrap(ext.apply_gmail_filter_to_existing_mail)(
+        service=service,
+        user_google_email="u@example.com",
+        filter_id="f1",
+        dry_run=False,
+    )
+    body = service.users().messages().batchModify.call_args.kwargs["body"]
+    assert body["ids"] == ["m1", "m2"]
+    assert body["addLabelIds"] == ["Label_1"]
+    assert "removeLabelIds" not in body

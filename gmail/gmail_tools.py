@@ -3460,6 +3460,263 @@ async def get_gmail_threads_content_batch(
     return header + "\n\n" + "\n---\n\n".join(output_threads)
 
 
+# The only colors Gmail accepts on a label. Same set for text and background;
+# anything else comes back as a 400 with no useful message.
+# Source: the LabelColor schema in the Gmail v1 discovery document
+# (www.googleapis.com/discovery/v1/apis/gmail/v1/rest). The HTML reference page
+# truncates the list; discovery carries all 113.
+GMAIL_LABEL_COLORS = frozenset(
+    [
+        "#000000",
+        "#434343",
+        "#666666",
+        "#999999",
+        "#cccccc",
+        "#efefef",
+        "#f3f3f3",
+        "#ffffff",
+        "#fb4c2f",
+        "#ffad47",
+        "#fad165",
+        "#16a766",
+        "#43d692",
+        "#4a86e8",
+        "#a479e2",
+        "#f691b3",
+        "#f6c5be",
+        "#ffe6c7",
+        "#fef1d1",
+        "#b9e4d0",
+        "#c6f3de",
+        "#c9daf8",
+        "#e4d7f5",
+        "#fcdee8",
+        "#efa093",
+        "#ffd6a2",
+        "#fce8b3",
+        "#89d3b2",
+        "#a0eac9",
+        "#a4c2f4",
+        "#d0bcf1",
+        "#fbc8d9",
+        "#e66550",
+        "#ffbc6b",
+        "#fcda83",
+        "#44b984",
+        "#68dfa9",
+        "#6d9eeb",
+        "#b694e8",
+        "#f7a7c0",
+        "#cc3a21",
+        "#eaa041",
+        "#f2c960",
+        "#149e60",
+        "#3dc789",
+        "#3c78d8",
+        "#8e63ce",
+        "#e07798",
+        "#ac2b16",
+        "#cf8933",
+        "#d5ae49",
+        "#0b804b",
+        "#2a9c68",
+        "#285bac",
+        "#653e9b",
+        "#b65775",
+        "#822111",
+        "#a46a21",
+        "#aa8831",
+        "#076239",
+        "#1a764d",
+        "#1c4587",
+        "#41236d",
+        "#83334c",
+        "#464646",
+        "#e7e7e7",
+        "#0d3472",
+        "#b6cff5",
+        "#0d3b44",
+        "#98d7e4",
+        "#3d188e",
+        "#e3d7ff",
+        "#711a36",
+        "#fbd3e0",
+        "#8a1c0a",
+        "#f2b2a8",
+        "#7a2e0b",
+        "#ffc8af",
+        "#7a4706",
+        "#ffdeb5",
+        "#594c05",
+        "#fbe983",
+        "#684e07",
+        "#fdedc1",
+        "#0b4f30",
+        "#b3efd3",
+        "#04502e",
+        "#a2dcc1",
+        "#c2c2c2",
+        "#4986e7",
+        "#2da2bb",
+        "#b99aff",
+        "#994a64",
+        "#f691b2",
+        "#ff7537",
+        "#ffad46",
+        "#662e37",
+        "#ebdbde",
+        "#cca6ac",
+        "#094228",
+        "#42d692",
+        "#16a765",
+        "#757575",
+        "#1e53b8",
+        "#007286",
+        "#7858c3",
+        "#c2185b",
+        "#d93025",
+        "#54240e",
+        "#633e04",
+        "#521d28",
+        "#202124",
+        "#083018",
+    ]
+)
+
+
+def _validate_label_color(color: JsonDict) -> None:
+    """Rejects colors Gmail will not take, before the call wastes a round trip."""
+    missing = {"backgroundColor", "textColor"} - set(color)
+    if missing:
+        raise Exception(
+            "Gmail needs both backgroundColor and textColor to set a color. "
+            f"Missing: {', '.join(sorted(missing))}."
+        )
+    unknown = {
+        key: value
+        for key, value in color.items()
+        if key in ("backgroundColor", "textColor")
+        and str(value).lower() not in GMAIL_LABEL_COLORS
+    }
+    if unknown:
+        raise Exception(
+            "Gmail only accepts its own label palette. Rejected: "
+            + ", ".join(f"{k}={v}" for k, v in unknown.items())
+            + ". Allowed values: "
+            + ", ".join(sorted(GMAIL_LABEL_COLORS))
+        )
+
+
+async def _label_names(service) -> Dict[str, str]:
+    """Maps label id to name. Returns {} if the caller's scope cannot read labels."""
+    try:
+        response = await asyncio.to_thread(
+            service.users().labels().list(userId="me").execute
+        )
+        return {label["id"]: label["name"] for label in response.get("labels", [])}
+    except Exception as exc:  # pragma: no cover - scope or network dependent
+        logger.debug(f"Could not read label names: {exc}")
+        return {}
+
+
+def _label_display(label_ids: List[str], names: Dict[str, str]) -> str:
+    """Renders label ids with their names when we know them."""
+    return ", ".join(
+        f"{label_id} ({names[label_id]})" if label_id in names else label_id
+        for label_id in label_ids
+    )
+
+
+def _format_filter(filter_obj: JsonDict, names: Dict[str, str]) -> List[str]:
+    """Renders one stored filter, criteria and actions, as indented lines."""
+    lines = [f"\U0001f539 Filter ID: {filter_obj.get('id', '(no id)')}"]
+    criteria = filter_obj.get("criteria", {})
+    action = filter_obj.get("action", {})
+
+    lines.append("  Criteria:")
+    criteria_lines = []
+    for key, caption in (
+        ("from", "From"),
+        ("to", "To"),
+        ("subject", "Subject"),
+        ("query", "Query"),
+        ("negatedQuery", "Exclude Query"),
+    ):
+        if criteria.get(key):
+            criteria_lines.append(f"{caption}: {criteria[key]}")
+    if criteria.get("hasAttachment"):
+        criteria_lines.append("Has attachment")
+    if criteria.get("excludeChats"):
+        criteria_lines.append("Exclude chats")
+    if criteria.get("size"):
+        comparison = criteria.get("sizeComparison", "")
+        criteria_lines.append(f"Size {comparison} {criteria['size']} bytes".strip())
+    lines += [f"    \u2022 {line}" for line in criteria_lines or ["(none)"]]
+
+    lines.append("  Actions:")
+    action_lines = []
+    if action.get("forward"):
+        action_lines.append(f"Forward to: {action['forward']}")
+    if action.get("addLabelIds"):
+        action_lines.append(
+            f"Add labels: {_label_display(action['addLabelIds'], names)}"
+        )
+    if action.get("removeLabelIds"):
+        action_lines.append(
+            f"Remove labels: {_label_display(action['removeLabelIds'], names)}"
+        )
+    lines += [f"    \u2022 {line}" for line in action_lines or ["(none)"]]
+    return lines
+
+
+def _filter_action_surprises(requested: JsonDict, stored: JsonDict) -> List[str]:
+    """Names every label id Gmail stored that the caller never asked for.
+
+    Gmail rewrites some actions on the way in. Removing INBOX, for example, can
+    come back with SPAM attached, which means "never mark this as spam". The
+    caller cannot see that unless we say so.
+    """
+    notes = []
+    for key in ("addLabelIds", "removeLabelIds"):
+        extra = [
+            label_id
+            for label_id in stored.get(key) or []
+            if label_id not in (requested.get(key) or [])
+        ]
+        if extra:
+            notes.append(f"{key}: Gmail also stored {', '.join(extra)}")
+    return notes
+
+
+def _format_label_line(label: JsonDict) -> str:
+    """Renders one label with every field the API gave us for it."""
+    parts = [f"  • {label['name']} (ID: {label['id']})"]
+    color = label.get("color")
+    if color:
+        parts.append(
+            f"    color: bg={color.get('backgroundColor')} text={color.get('textColor')}"
+        )
+    visibility = [
+        v
+        for v in (label.get("labelListVisibility"), label.get("messageListVisibility"))
+        if v
+    ]
+    if visibility:
+        parts.append(f"    visibility: {', '.join(visibility)}")
+    counts = [
+        f"{name}={label[key]}"
+        for name, key in (
+            ("messages", "messagesTotal"),
+            ("unread", "messagesUnread"),
+            ("threads", "threadsTotal"),
+        )
+        if label.get(key) is not None
+    ]
+    if counts:
+        parts.append(f"    {', '.join(counts)}")
+    return "\n".join(parts)
+
+
 @server.tool(
     title="List Gmail Labels",
     annotations=ToolAnnotations(
@@ -3471,22 +3728,45 @@ async def get_gmail_threads_content_batch(
 )
 @handle_http_errors("list_gmail_labels", is_read_only=True, service_type="gmail")
 @require_google_service("gmail", "gmail_read")
-async def list_gmail_labels(service, user_google_email: str) -> str:
+async def list_gmail_labels(
+    service, user_google_email: str, detailed: bool = False
+) -> str:
     """
     Lists all labels in the user's Gmail account.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
+        detailed (bool): Fetch each label's full record so colors and message
+            counts are included. Costs one API call per label; the plain list
+            call does not return those fields.
 
     Returns:
-        str: A formatted list of all labels with their IDs, names, and types.
+        str: A formatted list of all labels with their IDs, names, types and
+            visibility, plus colors and message counts when detailed is True.
     """
-    logger.info(f"[list_gmail_labels] Invoked. Email: '{user_google_email}'")
+    logger.info(
+        f"[list_gmail_labels] Invoked. Email: '{user_google_email}', Detailed: {detailed}"
+    )
 
     response = await asyncio.to_thread(
         service.users().labels().list(userId="me").execute
     )
     labels = response.get("labels", [])
+
+    if detailed and labels:
+        labels = list(
+            await asyncio.gather(
+                *(
+                    asyncio.to_thread(
+                        service.users()
+                        .labels()
+                        .get(userId="me", id=label["id"])
+                        .execute
+                    )
+                    for label in labels
+                )
+            )
+        )
 
     if not labels:
         return "No labels found."
@@ -3505,13 +3785,13 @@ async def list_gmail_labels(service, user_google_email: str) -> str:
     if system_labels:
         lines.append("📂 SYSTEM LABELS:")
         for label in system_labels:
-            lines.append(f"  • {label['name']} (ID: {label['id']})")
+            lines.append(_format_label_line(label))
         lines.append("")
 
     if user_labels:
         lines.append("🏷️  USER LABELS:")
         for label in user_labels:
-            lines.append(f"  • {label['name']} (ID: {label['id']})")
+            lines.append(_format_label_line(label))
 
     return "\n".join(lines)
 
@@ -3533,26 +3813,34 @@ async def manage_gmail_label(
     action: Literal["create", "update", "delete"],
     name: Optional[str] = None,
     label_id: Optional[str] = None,
-    label_list_visibility: Literal["labelShow", "labelHide"] = "labelShow",
-    message_list_visibility: Literal["show", "hide"] = "show",
+    label_list_visibility: Optional[Literal["labelShow", "labelHide"]] = None,
+    message_list_visibility: Optional[Literal["show", "hide"]] = None,
+    color: Optional[JsonDict] = None,
 ) -> str:
     """
     Manages Gmail labels: create, update, or delete labels.
+
+    An update writes only the fields you pass. Anything left as None keeps its
+    current value, including the color.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
         action (Literal["create", "update", "delete"]): Action to perform on the label.
         name (Optional[str]): Label name. Required for create, optional for update.
         label_id (Optional[str]): Label ID. Required for update and delete operations.
-        label_list_visibility (Literal["labelShow", "labelHide"]): Whether the label is shown in the label list.
-        message_list_visibility (Literal["show", "hide"]): Whether the label is shown in the message list.
+        label_list_visibility (Optional[Literal["labelShow", "labelHide"]]): Whether the label is shown in the label list. None leaves it unchanged; create defaults to labelShow.
+        message_list_visibility (Optional[Literal["show", "hide"]]): Whether the label is shown in the message list. None leaves it unchanged; create defaults to show.
+        color (Optional[Dict[str, str]]): {"backgroundColor": hex, "textColor": hex}. Gmail accepts only its own fixed palette; any other hex is rejected with a 400. None leaves the current color unchanged.
 
     Returns:
-        str: Confirmation message of the label operation.
+        str: Confirmation message of the label operation, echoing what was stored.
     """
     logger.info(
         f"[manage_gmail_label] Invoked. Email: '{user_google_email}', Action: '{action}'"
     )
+
+    if color is not None:
+        _validate_label_color(color)
 
     if action == "create" and not name:
         raise Exception("Label name is required for create action.")
@@ -3563,25 +3851,39 @@ async def manage_gmail_label(
     if action == "create":
         label_object = {
             "name": name,
-            "labelListVisibility": label_list_visibility,
-            "messageListVisibility": message_list_visibility,
+            "labelListVisibility": label_list_visibility or "labelShow",
+            "messageListVisibility": message_list_visibility or "show",
         }
+        if color is not None:
+            label_object["color"] = color
         created_label = await asyncio.to_thread(
             service.users().labels().create(userId="me", body=label_object).execute
         )
-        return f"Label created successfully!\nName: {created_label['name']}\nID: {created_label['id']}"
+        return (
+            "Label created successfully!\n" + _format_label_line(created_label).lstrip()
+        )
 
     elif action == "update":
+        # labels.update is a full replace: any field missing from the body is
+        # wiped, colors included. Read first, then overwrite only what was passed.
         current_label = await asyncio.to_thread(
             service.users().labels().get(userId="me", id=label_id).execute
         )
 
         label_object = {
-            "id": label_id,
-            "name": name if name is not None else current_label["name"],
-            "labelListVisibility": label_list_visibility,
-            "messageListVisibility": message_list_visibility,
+            key: value
+            for key, value in current_label.items()
+            if key in ("name", "labelListVisibility", "messageListVisibility", "color")
         }
+        label_object["id"] = label_id
+        for key, value in (
+            ("name", name),
+            ("labelListVisibility", label_list_visibility),
+            ("messageListVisibility", message_list_visibility),
+            ("color", color),
+        ):
+            if value is not None:
+                label_object[key] = value
 
         updated_label = await asyncio.to_thread(
             service.users()
@@ -3589,18 +3891,28 @@ async def manage_gmail_label(
             .update(userId="me", id=label_id, body=label_object)
             .execute
         )
-        return f"Label updated successfully!\nName: {updated_label['name']}\nID: {updated_label['id']}"
+        return (
+            "Label updated successfully!\n" + _format_label_line(updated_label).lstrip()
+        )
 
     elif action == "delete":
         label = await asyncio.to_thread(
             service.users().labels().get(userId="me", id=label_id).execute
         )
         label_name = label["name"]
+        message_count = label.get("messagesTotal") or 0
 
         await asyncio.to_thread(
             service.users().labels().delete(userId="me", id=label_id).execute
         )
-        return f"Label '{label_name}' (ID: {label_id}) deleted successfully!"
+        # Deleting a label strips it from every message it was on, and Gmail
+        # keeps no record of which ones. Say how much was lost.
+        cost = (
+            f" It was on {message_count} messages; that link is gone and cannot be restored."
+            if message_count
+            else ""
+        )
+        return f"Label '{label_name}' (ID: {label_id}) deleted successfully!{cost}"
 
 
 @server.tool(
@@ -3626,6 +3938,7 @@ async def list_gmail_filters(service, user_google_email: str) -> str:
     """
     logger.info(f"[list_gmail_filters] Invoked. Email: '{user_google_email}'")
 
+    names = await _label_names(service)
     response = await asyncio.to_thread(
         service.users().settings().filters().list(userId="me").execute
     )
@@ -3638,52 +3951,7 @@ async def list_gmail_filters(service, user_google_email: str) -> str:
     lines = [f"Found {len(filters)} filters:", ""]
 
     for filter_obj in filters:
-        filter_id = filter_obj.get("id", "(no id)")
-        criteria = filter_obj.get("criteria", {})
-        action = filter_obj.get("action", {})
-
-        lines.append(f"🔹 Filter ID: {filter_id}")
-        lines.append("  Criteria:")
-
-        criteria_lines = []
-        if criteria.get("from"):
-            criteria_lines.append(f"From: {criteria['from']}")
-        if criteria.get("to"):
-            criteria_lines.append(f"To: {criteria['to']}")
-        if criteria.get("subject"):
-            criteria_lines.append(f"Subject: {criteria['subject']}")
-        if criteria.get("query"):
-            criteria_lines.append(f"Query: {criteria['query']}")
-        if criteria.get("negatedQuery"):
-            criteria_lines.append(f"Exclude Query: {criteria['negatedQuery']}")
-        if criteria.get("hasAttachment"):
-            criteria_lines.append("Has attachment")
-        if criteria.get("excludeChats"):
-            criteria_lines.append("Exclude chats")
-        if criteria.get("size"):
-            comparison = criteria.get("sizeComparison", "")
-            criteria_lines.append(
-                f"Size {comparison or ''} {criteria['size']} bytes".strip()
-            )
-
-        if not criteria_lines:
-            criteria_lines.append("(none)")
-
-        lines.extend([f"    • {line}" for line in criteria_lines])
-
-        lines.append("  Actions:")
-        action_lines = []
-        if action.get("forward"):
-            action_lines.append(f"Forward to: {action['forward']}")
-        if action.get("removeLabelIds"):
-            action_lines.append(f"Remove labels: {', '.join(action['removeLabelIds'])}")
-        if action.get("addLabelIds"):
-            action_lines.append(f"Add labels: {', '.join(action['addLabelIds'])}")
-
-        if not action_lines:
-            action_lines.append("(none)")
-
-        lines.extend([f"    • {line}" for line in action_lines])
+        lines += _format_filter(filter_obj, names)
         lines.append("")
 
     return "\n".join(lines).rstrip()
@@ -3709,25 +3977,31 @@ async def manage_gmail_filter(
     filter_id: Optional[str] = None,
 ) -> str:
     """
-    Manages Gmail filters. Supports creating and deleting filters.
+    Manages Gmail filters: create, replace or delete.
+
+    Gmail has no filter update, so "replace" creates the new filter first and
+    deletes the old one only after that succeeds. Every result echoes the
+    filter Gmail actually stored, which is not always what was sent.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
-        action (str): Action to perform - "create" or "delete".
-        criteria (Optional[Dict[str, Any]]): Filter criteria object (required for create).
-        filter_action (Optional[Dict[str, Any]]): Filter action object (required for create). Named 'filter_action' to avoid shadowing the 'action' parameter.
-        filter_id (Optional[str]): ID of the filter to delete (required for delete).
+        action (str): Action to perform - "create", "replace" or "delete".
+        criteria (Optional[Dict[str, Any]]): Filter criteria object (required for create and replace).
+        filter_action (Optional[Dict[str, Any]]): Filter action object (required for create and replace). Named 'filter_action' to avoid shadowing the 'action' parameter.
+        filter_id (Optional[str]): ID of the filter to delete, or to replace.
 
     Returns:
-        str: Confirmation message with filter details.
+        str: Confirmation with the stored filter, and a note about anything Gmail added by itself.
     """
     action_lower = action.lower().strip()
-    if action_lower == "create":
+    if action_lower in ("create", "replace"):
         if not criteria or not filter_action:
             raise ValueError(
-                "criteria and filter_action are required for create action"
+                f"criteria and filter_action are required for {action_lower} action"
             )
-        logger.info("[manage_gmail_filter] Creating filter")
+        if action_lower == "replace" and not filter_id:
+            raise ValueError("filter_id is required for replace action")
+        logger.info(f"[manage_gmail_filter] {action_lower.title()} filter")
         filter_body = {"criteria": criteria, "action": filter_action}
         created_filter = await asyncio.to_thread(
             service.users()
@@ -3736,8 +4010,42 @@ async def manage_gmail_filter(
             .create(userId="me", body=filter_body)
             .execute
         )
-        fid = created_filter.get("id", "(unknown)")
-        return f"Filter created successfully!\nFilter ID: {fid}"
+        stale_filter_id = None
+        if action_lower == "replace":
+            # New one exists before the old one goes, so a failure never leaves
+            # the mailbox with no filter at all. Gmail has no atomic swap, so if
+            # the delete fails both filters stay live and the caller has to know.
+            try:
+                await asyncio.to_thread(
+                    service.users()
+                    .settings()
+                    .filters()
+                    .delete(userId="me", id=filter_id)
+                    .execute
+                )
+            except Exception as exc:
+                logger.warning(f"[manage_gmail_filter] Old filter not deleted: {exc}")
+                stale_filter_id = filter_id
+        names = await _label_names(service)
+        lines = [
+            f"Filter {'replaced' if action_lower == 'replace' else 'created'} successfully!"
+        ]
+        if action_lower == "replace" and stale_filter_id:
+            lines[0] = "Filter created, but the old one is STILL ACTIVE."
+            lines.append(
+                f"Both filters now match: {stale_filter_id} (old) and "
+                f"{created_filter.get('id', '(unknown)')} (new). Delete the old one."
+            )
+        elif action_lower == "replace":
+            lines.append(f"Deleted old filter: {filter_id}")
+        lines += _format_filter(created_filter, names)
+        surprises = _filter_action_surprises(
+            filter_action, created_filter.get("action", {})
+        )
+        if surprises:
+            lines.append("  Note, Gmail changed the action you sent:")
+            lines += [f"    \u2022 {note}" for note in surprises]
+        return "\n".join(lines)
     elif action_lower == "delete":
         if not filter_id:
             raise ValueError("filter_id is required for delete action")
@@ -3752,17 +4060,13 @@ async def manage_gmail_filter(
             .delete(userId="me", id=filter_id)
             .execute
         )
-        criteria_info = filter_details.get("criteria", {})
-        action_info = filter_details.get("action", {})
-        return (
-            "Filter deleted successfully!\n"
-            f"Filter ID: {filter_id}\n"
-            f"Criteria: {criteria_info or '(none)'}\n"
-            f"Action: {action_info or '(none)'}"
+        names = await _label_names(service)
+        return "\n".join(
+            ["Filter deleted successfully!"] + _format_filter(filter_details, names)
         )
     else:
         raise ValueError(
-            f"Invalid action '{action_lower}'. Must be 'create' or 'delete'."
+            f"Invalid action '{action_lower}'. Must be 'create', 'replace' or 'delete'."
         )
 
 
@@ -3783,11 +4087,15 @@ async def modify_gmail_message_labels(
     message_id: str,
     add_label_ids: Annotated[
         Optional[StringList],
-        Field(json_schema_extra={"type": "array", "items": {"type": "string"}}),
+        Field(
+            json_schema_extra={"type": "array", "items": {"type": "string"}}
+        ),
     ] = None,
     remove_label_ids: Annotated[
         Optional[StringList],
-        Field(json_schema_extra={"type": "array", "items": {"type": "string"}}),
+        Field(
+            json_schema_extra={"type": "array", "items": {"type": "string"}}
+        ),
     ] = None,
 ) -> str:
     """
@@ -3849,11 +4157,15 @@ async def batch_modify_gmail_message_labels(
     message_ids: StringList,
     add_label_ids: Annotated[
         Optional[StringList],
-        Field(json_schema_extra={"type": "array", "items": {"type": "string"}}),
+        Field(
+            json_schema_extra={"type": "array", "items": {"type": "string"}}
+        ),
     ] = None,
     remove_label_ids: Annotated[
         Optional[StringList],
-        Field(json_schema_extra={"type": "array", "items": {"type": "string"}}),
+        Field(
+            json_schema_extra={"type": "array", "items": {"type": "string"}}
+        ),
     ] = None,
 ) -> str:
     """

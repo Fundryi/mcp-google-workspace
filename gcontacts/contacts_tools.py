@@ -1694,3 +1694,7 @@ async def manage_contact_group(
         f"Modified contact group members for {resource_name} for {user_google_email}"
     )
     return response
+
+
+# Fork addition: extra Contacts tools live in their own module.
+import gcontacts.contacts_extended_tools  # noqa: E402,F401

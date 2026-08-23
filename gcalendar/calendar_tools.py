@@ -1159,6 +1159,7 @@ async def _delete_event_impl(
     event_id: str,
     calendar_id: str = "primary",
     send_updates: str = "all",
+    confirm_recurring: bool = False,
 ) -> str:
     """Internal implementation for deleting a calendar event."""
     logger.info(
@@ -1171,8 +1172,9 @@ async def _delete_event_impl(
     )
 
     # Try to get the event first to verify it exists
+    existing_event = {}
     try:
-        await asyncio.to_thread(
+        existing_event = await asyncio.to_thread(
             lambda: (
                 service.events().get(calendarId=calendar_id, eventId=event_id).execute()
             )
@@ -1190,6 +1192,18 @@ async def _delete_event_impl(
                 f"[delete_event] Error during pre-delete verification, but proceeding with deletion: {get_error}"
             )
 
+    # Deleting the master of a repeating event takes every instance with it,
+    # past ones included, and there is no undo. Say so before doing it.
+    recurrence = existing_event.get("recurrence")
+    if recurrence and not confirm_recurring:
+        raise Exception(
+            f"'{existing_event.get('summary', event_id)}' is a repeating event "
+            f"({'; '.join(recurrence)}). Deleting it removes every instance, past "
+            "ones included, and guests are told it is cancelled. To delete one "
+            "instance, pass that instance's own event_id. To delete the whole "
+            "series, call again with confirm_recurring=True."
+        )
+
     # Proceed with the deletion
     await asyncio.to_thread(
         lambda: (
@@ -1203,7 +1217,28 @@ async def _delete_event_impl(
         )
     )
 
-    confirmation_message = f"Successfully deleted event (ID: {event_id}) from calendar '{calendar_id}' for {user_google_email}."
+    deleted = [
+        f"Successfully deleted event (ID: {event_id}) from calendar '{calendar_id}' for {user_google_email}.",
+        f"  Summary: {existing_event.get('summary', '(none)')}",
+    ]
+    start = existing_event.get("start", {})
+    if start:
+        deleted.append(f"  Start: {start.get('dateTime') or start.get('date')}")
+    if recurrence:
+        deleted.append(f"  Whole series removed: {'; '.join(recurrence)}")
+    attendees = existing_event.get("attendees") or []
+    if attendees and send_updates != "none":
+        # externalOnly mails only guests who are not on Google Calendar, so the
+        # attendee count is an upper bound, not a delivery count.
+        reach = (
+            "guests outside Google Calendar"
+            if send_updates == "externalOnly"
+            else f"{len(attendees)} guests"
+        )
+        deleted.append(
+            f"  Cancellation mailed to {reach} (send_updates='{send_updates}')."
+        )
+    confirmation_message = "\n".join(deleted)
     logger.info(f"Event deleted successfully for {user_google_email}. ID: {event_id}")
     return confirmation_message
 
@@ -1316,6 +1351,7 @@ async def manage_event(
     response: Optional[str] = None,
     rsvp_comment: Optional[str] = None,
     send_updates: Optional[str] = None,
+    confirm_recurring: bool = False,
 ) -> str:
     """
     Manages calendar events. Supports creating, updating, deleting, and RSVP.
@@ -1357,6 +1393,7 @@ async def manage_event(
         response (Optional[str]): RSVP response — "accepted", "declined", "tentative", or "needsAction" (rsvp action only).
         rsvp_comment (Optional[str]): Optional message to include with the RSVP response (rsvp action only).
         send_updates (Optional[str]): Notification behavior for create, update, delete, and rsvp — "all" (default), "externalOnly", or "none".
+        confirm_recurring (bool): Required as True to delete a repeating event, because that removes every instance of it, past ones included.
 
     Returns:
         str: Confirmation message with event details.
@@ -1451,6 +1488,7 @@ async def manage_event(
             event_id=event_id,
             calendar_id=calendar_id,
             send_updates=send_updates or "all",
+            confirm_recurring=confirm_recurring,
         )
     elif action_lower == "rsvp":
         if not event_id:
@@ -2551,3 +2589,7 @@ async def create_calendar(
         f"[create_calendar] Created calendar '{calendar_summary}' with ID: {calendar_id}"
     )
     return f"Created calendar '{calendar_summary}' (ID: {calendar_id})"
+
+
+# Fork addition: extra Calendar tools live in their own module.
+import gcalendar.calendar_extended_tools  # noqa: E402,F401

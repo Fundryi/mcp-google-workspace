@@ -13,7 +13,7 @@ from email.message import EmailMessage
 from email.policy import SMTP
 import functools
 import os
-from typing import Annotated, Any, Dict, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from mcp.types import ToolAnnotations
 from pydantic import Field
@@ -32,7 +32,7 @@ from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import StringList, handle_http_errors
 from gmail.gmail_helpers import html_to_text_preserving_breaks
-from gmail.gmail_tools import _extract_headers, _extract_message_body
+from gmail.gmail_tools import _extract_headers, _extract_message_body, _label_names
 
 logger = logging.getLogger(__name__)
 
@@ -1275,6 +1275,426 @@ async def verify_gmail_send_as(
     return f"Verification mail sent for: {send_as_email}"
 
 
+def _quote_query_value(value: str) -> str:
+    """Keeps a literal value literal inside a Gmail query.
+
+    Unquoted, a value like "alpha OR beta" is read as Gmail's OR operator and
+    matches far more than the filter does.
+    """
+    return '"' + str(value).replace('"', "") + '"'
+
+
+def _filter_criteria_to_query(criteria: Dict[str, Any]) -> str:
+    """Turns a filter's criteria object into the equivalent Gmail search query."""
+    parts = []
+    for key, prefix in (("from", "from:"), ("subject", "subject:")):
+        value = criteria.get(key)
+        if value:
+            parts.append(f"{prefix}{_quote_query_value(value)}")
+    if criteria.get("to"):
+        # A filter's "to" matches To, Cc and Bcc. Gmail's to: operator does not.
+        recipient = _quote_query_value(criteria["to"])
+        parts.append(f"(to:{recipient} OR cc:{recipient} OR bcc:{recipient})")
+    if criteria.get("hasAttachment"):
+        parts.append("has:attachment")
+    if criteria.get("excludeChats"):
+        parts.append("-in:chats")
+    if criteria.get("size"):
+        comparison = (
+            "smaller" if criteria.get("sizeComparison") == "smaller" else "larger"
+        )
+        parts.append(f"{comparison}:{criteria['size']}")
+    if criteria.get("query"):
+        parts.append(criteria["query"])
+    if criteria.get("negatedQuery"):
+        parts.append(f"-({criteria['negatedQuery']})")
+    return " ".join(parts)
+
+
+async def _list_message_ids(service, query: str, limit: int) -> List[str]:
+    """Pages through messages.list until limit ids are collected."""
+    ids: List[str] = []
+    page_token = None
+    while len(ids) < limit:
+        response = await asyncio.to_thread(
+            service.users()
+            .messages()
+            .list(
+                userId="me",
+                q=query,
+                maxResults=min(500, limit - len(ids)),
+                pageToken=page_token,
+            )
+            .execute
+        )
+        ids += [message["id"] for message in response.get("messages", [])]
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+    return ids[:limit]
+
+
+async def _message_metadata(service, message_ids: List[str]) -> List[Dict[str, Any]]:
+    """Fetches From, Subject, Date and label ids for each message, in parallel."""
+    return list(
+        await asyncio.gather(
+            *(
+                asyncio.to_thread(
+                    service.users()
+                    .messages()
+                    .get(
+                        userId="me",
+                        id=message_id,
+                        format="metadata",
+                        metadataHeaders=["From", "Subject", "Date"],
+                    )
+                    .execute
+                )
+                for message_id in message_ids
+            )
+        )
+    )
+
+
+def _sender_domain(sender: str) -> str:
+    """Pulls the domain out of a From header, or '(unknown)'."""
+    address = sender.rsplit("<", 1)[-1].rstrip(">")
+    return address.rsplit("@", 1)[-1].strip().lower() or "(unknown)"
+
+
+@server.tool(title="Apply Gmail Filter To Existing Mail", annotations=_WRITE)
+@handle_http_errors("apply_gmail_filter_to_existing_mail", service_type="gmail")
+@require_google_service("gmail", GMAIL_MODIFY_SCOPE)
+async def apply_gmail_filter_to_existing_mail(
+    service,
+    user_google_email: str,
+    filter_id: str,
+    dry_run: bool = True,
+    scope: Literal["all", "inbox"] = "all",
+    apply_label_actions_only: bool = True,
+    max_messages: int = 2000,
+) -> str:
+    """
+    Replays an existing filter over mail that is already in the mailbox.
+    Gmail filters only run on arriving mail, so this runs the filter's criteria
+    as a search and applies its actions to the matches.
+
+    Defaults are the safe ones: nothing is changed until dry_run is set to
+    False, and only label additions are applied unless
+    apply_label_actions_only is set to False.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        filter_id (str): The filter to replay.
+        dry_run (bool): True (default) reports the match count and a sample and changes nothing.
+        scope (Literal["all", "inbox"]): Search all mail or the inbox only. Spam and trash are left out either way, the same as a Gmail filter.
+        apply_label_actions_only (bool): True (default) applies addLabelIds only. False also applies removeLabelIds, which can archive or mark read in bulk with no undo.
+        max_messages (int): Safety cap on how many messages are touched.
+
+    Returns:
+        str: What matched and what was changed.
+    """
+    logger.info(
+        f"[apply_gmail_filter_to_existing_mail] Email: '{user_google_email}', "
+        f"Filter: '{filter_id}', Dry run: {dry_run}"
+    )
+    gmail_filter = await asyncio.to_thread(
+        service.users().settings().filters().get(userId="me", id=filter_id).execute
+    )
+    criteria = gmail_filter.get("criteria", {})
+    filter_action = gmail_filter.get("action", {})
+    add_label_ids = filter_action.get("addLabelIds") or []
+    remove_label_ids = (
+        [] if apply_label_actions_only else (filter_action.get("removeLabelIds") or [])
+    )
+    if not add_label_ids and not remove_label_ids:
+        raise Exception(
+            "This filter has no label actions to replay. "
+            "Set apply_label_actions_only to False if you meant to apply its removals."
+        )
+
+    query = _filter_criteria_to_query(criteria)
+    if scope == "inbox":
+        query = f"{query} in:inbox".strip()
+    if not query:
+        raise Exception("This filter has no criteria that map to a search query.")
+
+    message_ids = await _list_message_ids(service, query, max_messages)
+    header = [
+        f"Filter: {filter_id}",
+        f"Query: {query}",
+        f"Matches: {len(message_ids)}"
+        + (f" (capped at {max_messages})" if len(message_ids) == max_messages else ""),
+        f"Would add labels: {', '.join(add_label_ids) or '(none)'}",
+        f"Would remove labels: {', '.join(remove_label_ids) or '(none)'}",
+    ]
+    if not message_ids:
+        return "\n".join(header + ["", "Nothing to do."])
+
+    if dry_run:
+        sample = await _message_metadata(service, message_ids[:5])
+        lines = header + ["", "Dry run, nothing changed. Sample:"]
+        for message in sample:
+            headers = _extract_headers(message.get("payload", {}), ["From", "Subject"])
+            lines.append(
+                f"  • {headers.get('From', '(no sender)')} — "
+                f"{headers.get('Subject', '(no subject)')}"
+            )
+        lines.append("")
+        lines.append("Set dry_run to False to apply this.")
+        return "\n".join(lines)
+
+    body = _drop_none(
+        addLabelIds=add_label_ids or None, removeLabelIds=remove_label_ids or None
+    )
+    for start in range(0, len(message_ids), 1000):  # batchModify caps at 1000 ids
+        chunk = message_ids[start : start + 1000]
+        await asyncio.to_thread(
+            service.users()
+            .messages()
+            .batchModify(userId="me", body={**body, "ids": chunk})
+            .execute
+        )
+    return "\n".join(header + ["", f"Applied to {len(message_ids)} messages."])
+
+
+@server.tool(title="Modify Gmail Messages By Query", annotations=_WRITE)
+@handle_http_errors("modify_gmail_messages_by_query", service_type="gmail")
+@require_google_service("gmail", GMAIL_MODIFY_SCOPE)
+async def modify_gmail_messages_by_query(
+    service,
+    user_google_email: str,
+    query: str,
+    add_label_ids: _OptionalStringList = None,
+    remove_label_ids: _OptionalStringList = None,
+    dry_run: bool = True,
+    max_messages: int = 2000,
+) -> str:
+    """
+    Adds or removes labels on every message matching a search query.
+    Saves running a search and then feeding the ids to a batch call by hand.
+
+    Nothing changes until dry_run is set to False. Removing INBOX archives, and
+    there is no undo beyond adding it back, so check the dry run first.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        query (str): Gmail search query, for example "from:billing@example.com older_than:1y".
+        add_label_ids (Optional[List[str]]): Label IDs to add.
+        remove_label_ids (Optional[List[str]]): Label IDs to remove.
+        dry_run (bool): True (default) reports the match count and a sample and changes nothing.
+        max_messages (int): Safety cap on how many messages are touched.
+
+    Returns:
+        str: What matched and what was changed.
+    """
+    logger.info(
+        f"[modify_gmail_messages_by_query] Email: '{user_google_email}', "
+        f"Query: '{query}', Dry run: {dry_run}"
+    )
+    if not add_label_ids and not remove_label_ids:
+        raise Exception(
+            "At least one of add_label_ids or remove_label_ids must be provided."
+        )
+    if not query.strip():
+        raise Exception("A query is required; refusing to touch the whole mailbox.")
+
+    message_ids = await _list_message_ids(service, query, max_messages)
+    header = [
+        f"Query: {query}",
+        f"Matches: {len(message_ids)}"
+        + (f" (capped at {max_messages})" if len(message_ids) == max_messages else ""),
+        f"Add labels: {', '.join(add_label_ids or []) or '(none)'}",
+        f"Remove labels: {', '.join(remove_label_ids or []) or '(none)'}",
+    ]
+    if not message_ids:
+        return "\n".join(header + ["", "Nothing to do."])
+
+    if dry_run:
+        sample = await _message_metadata(service, message_ids[:5])
+        lines = header + ["", "Dry run, nothing changed. Sample:"]
+        for message in sample:
+            headers = _extract_headers(message.get("payload", {}), ["From", "Subject"])
+            lines.append(
+                f"  • {headers.get('From', '(no sender)')} — "
+                f"{headers.get('Subject', '(no subject)')}"
+            )
+        return "\n".join(lines + ["", "Set dry_run to False to apply this."])
+
+    body = _drop_none(
+        addLabelIds=add_label_ids or None, removeLabelIds=remove_label_ids or None
+    )
+    for start in range(0, len(message_ids), 1000):  # batchModify caps at 1000 ids
+        await asyncio.to_thread(
+            service.users()
+            .messages()
+            .batchModify(
+                userId="me", body={**body, "ids": message_ids[start : start + 1000]}
+            )
+            .execute
+        )
+    return "\n".join(header + ["", f"Applied to {len(message_ids)} messages."])
+
+
+@server.tool(title="List Gmail History", annotations=_READ)
+@handle_http_errors("list_gmail_history", is_read_only=True, service_type="gmail")
+@require_google_service("gmail", "gmail_read")
+async def list_gmail_history(
+    service,
+    user_google_email: str,
+    start_history_id: str,
+    history_types: _OptionalStringList = None,
+    label_id: Optional[str] = None,
+    max_changes: int = 200,
+) -> str:
+    """
+    Lists what changed in the mailbox since a history ID: messages added,
+    deleted, and labels put on or taken off. This is the cheap way to catch up,
+    instead of searching the whole mailbox again.
+
+    Get a starting history ID from get_gmail_profile or watch_gmail_mailbox.
+    Gmail keeps history for about a week; an ID older than that returns 404 and
+    means you have to do a full read instead.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        start_history_id (str): Report changes after this history ID.
+        history_types (Optional[List[str]]): Limit to some of messageAdded, messageDeleted, labelAdded, labelRemoved. Defaults to all of them.
+        label_id (Optional[str]): Only report changes touching this label.
+        max_changes (int): Safety cap on how many history records to read.
+
+    Returns:
+        str: One line per change, plus the history ID to pass in next time.
+    """
+    logger.info(
+        f"[list_gmail_history] Email: '{user_google_email}', Since: '{start_history_id}'"
+    )
+    records: List[Dict[str, Any]] = []
+    latest_history_id = start_history_id
+    page_token = None
+    while len(records) < max_changes:
+        response = await asyncio.to_thread(
+            service.users()
+            .history()
+            .list(
+                userId="me",
+                startHistoryId=start_history_id,
+                historyTypes=history_types or None,
+                labelId=label_id,
+                maxResults=min(500, max_changes - len(records)),
+                pageToken=page_token,
+            )
+            .execute
+        )
+        records += response.get("history", [])
+        latest_history_id = response.get("historyId", latest_history_id)
+        page_token = response.get("nextPageToken")
+        if not page_token:
+            break
+
+    lines = [
+        f"Changes since history ID {start_history_id}: {len(records)}",
+        f"Next start_history_id: {latest_history_id}",
+    ]
+    if not records:
+        return "\n".join(lines + ["", "Nothing changed."])
+
+    names = await _label_names(service)
+    lines.append("")
+    for record in records[:max_changes]:
+        for kind, caption in (
+            ("messagesAdded", "added"),
+            ("messagesDeleted", "deleted"),
+        ):
+            for item in record.get(kind, []):
+                message = item.get("message", {})
+                lines.append(f"  • message {caption}: {message.get('id')}")
+        for kind, caption in (("labelsAdded", "+"), ("labelsRemoved", "-")):
+            for item in record.get(kind, []):
+                labels = ", ".join(
+                    names.get(label_id_, label_id_)
+                    for label_id_ in item.get("labelIds", [])
+                )
+                lines.append(
+                    f"  • {caption}{labels} on message "
+                    f"{item.get('message', {}).get('id')}"
+                )
+    return "\n".join(lines)
+
+
+@server.tool(title="Summarize Gmail Messages", annotations=_READ)
+@handle_http_errors("summarize_gmail_messages", is_read_only=True, service_type="gmail")
+@require_google_service("gmail", "gmail_read")
+async def summarize_gmail_messages(
+    service,
+    user_google_email: str,
+    query: str = "in:inbox",
+    max_results: int = 100,
+    group_by_sender_domain: bool = False,
+) -> str:
+    """
+    Lists sender, subject, date and label names for the messages matching a
+    query, in one call. Bodies are never fetched. Use it to see who writes to a
+    mailbox before deciding what labels and filters it needs.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        query (str): Gmail search query. Defaults to in:inbox.
+        max_results (int): How many messages to look at.
+        group_by_sender_domain (bool): True returns a count per sender domain instead of one line per message.
+
+    Returns:
+        str: One line per message, or per sender domain with counts.
+    """
+    logger.info(
+        f"[summarize_gmail_messages] Email: '{user_google_email}', Query: '{query}'"
+    )
+    message_ids = await _list_message_ids(service, query, max_results)
+    if not message_ids:
+        return f"No messages matched: {query}"
+
+    messages = await _message_metadata(service, message_ids)
+
+    if group_by_sender_domain:
+        counts: Dict[str, int] = {}
+        for message in messages:
+            headers = _extract_headers(message.get("payload", {}), ["From"])
+            domain = _sender_domain(headers.get("From", ""))
+            counts[domain] = counts.get(domain, 0) + 1
+        lines = [f"{len(messages)} messages from {len(counts)} domains:", ""]
+        lines += [
+            f"  {count:>4}  {domain}"
+            for domain, count in sorted(
+                counts.items(), key=lambda item: (-item[1], item[0])
+            )
+        ]
+        return "\n".join(lines)
+
+    label_response = await asyncio.to_thread(
+        service.users().labels().list(userId="me").execute
+    )
+    label_names = {
+        label["id"]: label["name"] for label in label_response.get("labels", [])
+    }
+
+    lines = [f"{len(messages)} messages matching: {query}", ""]
+    for message in messages:
+        headers = _extract_headers(
+            message.get("payload", {}), ["From", "Subject", "Date"]
+        )
+        labels = ", ".join(
+            label_names.get(label_id, label_id)
+            for label_id in message.get("labelIds", [])
+        )
+        lines.append(f"  • {headers.get('From', '(no sender)')}")
+        lines.append(f"    {headers.get('Subject', '(no subject)')}")
+        lines.append(
+            f"    {headers.get('Date', '(no date)')} | ID: {message['id']}"
+            + (f" | labels: {labels}" if labels else "")
+        )
+    return "\n".join(lines)
+
+
 EXTENDED_TOOL_NAMES = [
     "list_gmail_accounts",
     "trash_gmail_message",
@@ -1313,6 +1733,10 @@ EXTENDED_TOOL_NAMES = [
     "update_gmail_send_as",
     "delete_gmail_send_as",
     "verify_gmail_send_as",
+    "apply_gmail_filter_to_existing_mail",
+    "summarize_gmail_messages",
+    "modify_gmail_messages_by_query",
+    "list_gmail_history",
 ]
 
 DELEGATED_TOOL_NAMES = [

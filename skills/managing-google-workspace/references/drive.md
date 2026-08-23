@@ -194,6 +194,59 @@ Search for a file by name and check if it has public link sharing enabled.
 
 ---
 
+### manage_drive_trash
+Lists the trash, moves files into it, or restores them. Nothing is ever deleted for good.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| action | string | no | list | "list", "trash" or "restore" |
+| file_ids | array | conditional | | The files to move. Use this or query |
+| query | string | conditional | | Drive query picking the files instead. The trashed state clause is added for you |
+| dry_run | boolean | no | true | Lists what would move, changes nothing |
+| max_files | integer | no | 200 | Safety cap, applies to both file_ids and query |
+
+Files in the trash keep their ID, sharing and comments. Drive empties the trash by itself after 30 days. A file the user cannot trash is reported by name; the rest still move.
+
+### list_drive_changes
+What changed in Drive since a page token: files added, edited, moved, trashed, removed, or shared with you.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| page_token | string | no | | Omit on the first call to just get a starting token |
+| include_removed | boolean | no | true | Files deleted or no longer shared with you |
+| include_shared_drives | boolean | no | true | Shared drive items as well as My Drive |
+| max_changes | integer | no | 200 | Safety cap |
+
+Call it once with no token to get a starting token, keep that, and pass it next time. The result hands back the token to use after that.
+
+### list_drive_file_revisions
+The saved versions of a file: when each was kept, who wrote it, how big it was.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| file_id | string | yes | | |
+| max_revisions | integer | no | 100 | Safety cap |
+
+Docs, Sheets and Slides keep versions this way. An uploaded file keeps them only when it was replaced.
+
+### query_drive_activity
+Who changed, moved, shared, deleted or commented on Drive content, and when. This is the audit trail the other Drive tools cannot show.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| user_google_email | string | yes | | |
+| file_id | string | conditional | | One file. Use this or folder_id, not both |
+| folder_id | string | conditional | | Everything under one folder |
+| filter_expression | string | no | | For example `time > "2026-01-01T00:00:00Z"` or `detail.action_detail_case: SHARE` |
+| max_activities | integer | no | 100 | Safety cap |
+
+Needs the **Drive Activity API turned on in the Cloud project**, on top of the `drive.activity.readonly` scope. Without the API enabled every call is a 403. Works for private and Workspace accounts.
+
+---
+
 ## Drive Search Query Operators
 
 The `query` parameter of `search_drive_files` uses Google Drive query syntax (e.g. `name contains`, `mimeType =`, `'id' in parents`, `modifiedTime >`, `trashed =`, `sharedWithMe`). Combine with `and`/`or`/`not`.

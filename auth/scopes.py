@@ -25,6 +25,9 @@ CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+# Fork: the Drive Activity API is a separate API (driveactivity v2) with its own
+# scope. Turn it on in the Cloud project as well, or every call returns 403.
+DRIVE_ACTIVITY_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.activity.readonly"
 
 # Google Docs scopes
 DOCS_READONLY_SCOPE = "https://www.googleapis.com/auth/documents.readonly"
@@ -44,6 +47,10 @@ CHAT_READONLY_SCOPE = "https://www.googleapis.com/auth/chat.messages.readonly"
 CHAT_WRITE_SCOPE = "https://www.googleapis.com/auth/chat.messages"
 CHAT_SPACES_SCOPE = "https://www.googleapis.com/auth/chat.spaces"
 CHAT_SPACES_READONLY_SCOPE = "https://www.googleapis.com/auth/chat.spaces.readonly"
+# Fork: who is in a space. Chat API is Workspace only; private accounts 403.
+CHAT_MEMBERSHIPS_READONLY_SCOPE = (
+    "https://www.googleapis.com/auth/chat.memberships.readonly"
+)
 
 # Google Sheets API scopes
 SHEETS_READONLY_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
@@ -67,6 +74,11 @@ TASKS_READONLY_SCOPE = "https://www.googleapis.com/auth/tasks.readonly"
 # Google Contacts (People API) scopes
 CONTACTS_SCOPE = "https://www.googleapis.com/auth/contacts"
 CONTACTS_READONLY_SCOPE = "https://www.googleapis.com/auth/contacts.readonly"
+# Fork: "other contacts" are the addresses Google saved from your mail but that
+# you never added to Contacts. A separate scope, and a separate People resource.
+CONTACTS_OTHER_READONLY_SCOPE = (
+    "https://www.googleapis.com/auth/contacts.other.readonly"
+)
 
 # Google Custom Search API scope
 CUSTOM_SEARCH_SCOPE = "https://www.googleapis.com/auth/cse"
@@ -150,7 +162,12 @@ DOCS_SCOPES = [
 
 CALENDAR_SCOPES = [CALENDAR_SCOPE, CALENDAR_READONLY_SCOPE, CALENDAR_EVENTS_SCOPE]
 
-DRIVE_SCOPES = [DRIVE_SCOPE, DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE]
+DRIVE_SCOPES = [
+    DRIVE_SCOPE,
+    DRIVE_READONLY_SCOPE,
+    DRIVE_FILE_SCOPE,
+    DRIVE_ACTIVITY_READONLY_SCOPE,  # fork: query_drive_activity
+]
 
 GMAIL_SCOPES = [
     GMAIL_READONLY_SCOPE,
@@ -172,6 +189,7 @@ CHAT_SCOPES = [
     CHAT_WRITE_SCOPE,
     CHAT_SPACES_SCOPE,
     CHAT_SPACES_READONLY_SCOPE,
+    CHAT_MEMBERSHIPS_READONLY_SCOPE,  # fork: list_chat_members
 ]
 
 SHEETS_SCOPES = [SHEETS_READONLY_SCOPE, SHEETS_WRITE_SCOPE, DRIVE_READONLY_SCOPE]
@@ -186,7 +204,11 @@ SLIDES_SCOPES = [SLIDES_SCOPE, SLIDES_READONLY_SCOPE]
 
 TASKS_SCOPES = [TASKS_SCOPE, TASKS_READONLY_SCOPE]
 
-CONTACTS_SCOPES = [CONTACTS_SCOPE, CONTACTS_READONLY_SCOPE]
+CONTACTS_SCOPES = [
+    CONTACTS_SCOPE,
+    CONTACTS_READONLY_SCOPE,
+    CONTACTS_OTHER_READONLY_SCOPE,  # fork: search_other_contacts
+]
 
 CUSTOM_SEARCH_SCOPES = [CUSTOM_SEARCH_SCOPE]
 
@@ -221,15 +243,19 @@ TOOL_SCOPES_MAP = {
 # Tool-to-read-only-scopes mapping
 TOOL_READONLY_SCOPES_MAP = {
     "gmail": [GMAIL_READONLY_SCOPE],
-    "drive": [DRIVE_READONLY_SCOPE],
+    "drive": [DRIVE_READONLY_SCOPE, DRIVE_ACTIVITY_READONLY_SCOPE],
     "calendar": [CALENDAR_READONLY_SCOPE],
     "docs": [DOCS_READONLY_SCOPE, DRIVE_READONLY_SCOPE],
     "sheets": [SHEETS_READONLY_SCOPE, DRIVE_READONLY_SCOPE],
-    "chat": [CHAT_READONLY_SCOPE, CHAT_SPACES_READONLY_SCOPE],
+    "chat": [
+        CHAT_READONLY_SCOPE,
+        CHAT_SPACES_READONLY_SCOPE,
+        CHAT_MEMBERSHIPS_READONLY_SCOPE,
+    ],
     "forms": [FORMS_BODY_READONLY_SCOPE, FORMS_RESPONSES_READONLY_SCOPE],
     "slides": [SLIDES_READONLY_SCOPE],
     "tasks": [TASKS_READONLY_SCOPE],
-    "contacts": [CONTACTS_READONLY_SCOPE],
+    "contacts": [CONTACTS_READONLY_SCOPE, CONTACTS_OTHER_READONLY_SCOPE],
     "search": CUSTOM_SEARCH_SCOPES,
     "appscript": [
         SCRIPT_PROJECTS_READONLY_SCOPE,
