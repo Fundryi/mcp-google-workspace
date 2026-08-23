@@ -194,10 +194,14 @@ async def _get_script_project_impl(
     """Internal implementation for get_script_project."""
     logger.info(f"[get_script_project] Email: {user_google_email}, ID: {script_id}")
 
-    # Get project metadata and content concurrently (independent requests)
-    project, content = await asyncio.gather(
-        asyncio.to_thread(service.projects().get(scriptId=script_id).execute),
-        asyncio.to_thread(service.projects().getContent(scriptId=script_id).execute),
+    # One at a time. The requests are independent, but the service holds a
+    # single httplib2 connection that is not thread safe, so running them
+    # together fails with an SSL error or a read timeout.
+    project = await asyncio.to_thread(
+        service.projects().get(scriptId=script_id).execute
+    )
+    content = await asyncio.to_thread(
+        service.projects().getContent(scriptId=script_id).execute
     )
 
     title = project.get("title", "Untitled")
