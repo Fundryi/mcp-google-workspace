@@ -135,10 +135,23 @@ def resolve_stdio_callback_port() -> None:
     normal PORT/WORKSPACE_MCP_PORT semantics. The fallback range only exists for
     the standalone stdio callback listener.
     """
-    from auth.port_resolver import resolve_port, NoAvailablePortError, PortConfigError
+    from auth.google_auth import is_headless
+    from auth.port_resolver import (
+        RESOLVED_PORT_ENV,
+        resolve_port,
+        preferred_port,
+        NoAvailablePortError,
+        PortConfigError,
+    )
 
     try:
-        resolve_port()
+        if is_headless():
+            # Paste-back mode never binds the port. A fallback would change the
+            # redirect URI away from the one registered with Google.
+            os.environ["WORKSPACE_MCP_PORT"] = str(preferred_port())
+            os.environ[RESOLVED_PORT_ENV] = "1"
+        else:
+            resolve_port()
     except (NoAvailablePortError, PortConfigError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)

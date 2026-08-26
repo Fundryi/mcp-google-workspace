@@ -19,6 +19,7 @@ gmail:
     - get_gmail_threads_content_batch
     - batch_modify_gmail_message_labels
     - start_google_auth
+    - complete_google_auth
     # Fork additions (gmail/gmail_extended_tools.py)
     - list_gmail_accounts
     - trash_gmail_message

@@ -14,7 +14,12 @@ install_startup_warning_filters()
 
 from auth.auth_info_middleware import AuthInfoMiddleware
 from core.camel_case_middleware import CamelCaseArgumentsMiddleware
-from auth.google_auth import handle_auth_callback, start_auth_flow, check_client_secrets
+from auth.google_auth import (
+    handle_auth_callback,
+    is_headless,
+    start_auth_flow,
+    check_client_secrets,
+)
 from auth.gateway_identity import get_verified_gateway_principal
 from auth.mcp_session_middleware import MCPSessionMiddleware
 from auth.oauth21_session_store import set_auth_provider
@@ -919,8 +924,11 @@ async def start_google_auth(
         # helper no-ops in other transports and binds the port lazily (#832).
         from auth.oauth_callback_server import ensure_stdio_oauth_callback_available
 
-        success, error_msg = await asyncio.to_thread(
-            ensure_stdio_oauth_callback_available
+        # Fork: headless hosts paste the redirect back, so nothing listens.
+        success, error_msg = (
+            (True, "")
+            if is_headless()
+            else await asyncio.to_thread(ensure_stdio_oauth_callback_available)
         )
         if not success:
             error_detail = f" ({error_msg})" if error_msg else ""
@@ -938,3 +946,7 @@ async def start_google_auth(
     except Exception as e:
         logger.error(f"Failed to start Google authentication flow: {e}", exc_info=True)
         return f"**Error:** An unexpected error occurred: {e}"
+
+
+# Fork addition: paste-back sign-in tool lives in its own module.
+import core.auth_extended_tools  # noqa: E402,F401

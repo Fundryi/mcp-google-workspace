@@ -1,8 +1,10 @@
 """Log Google accounts in from the terminal.
 
 Starts the server exactly as MCP Router does (reads mcp-router.local.json),
-calls start_google_auth for each address, waits until the token is stored,
-then moves on. The server opens the browser itself.
+calls start_google_auth for each address, then either waits for the browser
+tab or takes the redirect address you paste back. Works on a desktop and on
+a headless box over SSH: open the URL on any machine, sign in, copy the
+address of the page that fails to load, paste it here.
 
     uv run --frozen python scripts/auth.py                 # every address in allowed.txt
     uv run --frozen python scripts/auth.py me@gmail.com    # just these
@@ -49,6 +51,35 @@ async def stored_accounts(session) -> set:
     }
 
 
+async def login(session, email: str) -> None:
+    res = await session.call_tool(
+        "start_google_auth", {"service_name": "gmail", "user_google_email": email}
+    )
+    text = res.content[0].text
+    url = next((w for w in text.split() if w.startswith("http")), None)
+    if url is None:
+        print(f"[fail] {email}: {text}")
+        return
+    print(f"[auth] {email}: open this URL, pick THIS account, accept.")
+    print(f"       {url.rstrip(').,')}")
+    print("       Then paste the address of the page you land on.")
+    pasted = await asyncio.to_thread(
+        input, "       Paste here (or press Enter if the tab finished by itself): "
+    )
+    if pasted.strip():
+        res = await session.call_tool(
+            "complete_google_auth", {"authorization_response": pasted.strip()}
+        )
+        print(f"       {res.content[0].text}")
+        return
+    for _ in range(90):  # 3 minutes for the browser tab
+        if email in await stored_accounts(session):
+            print(f"[ok]   {email} stored")
+            return
+        await asyncio.sleep(2)
+    print(f"[skip] {email}: no login within 3 minutes")
+
+
 async def main() -> int:
     params = load_server()
     emails = wanted_emails(params.env)
@@ -60,24 +91,7 @@ async def main() -> int:
                 if email in done:
                     print(f"[ok]   {email} already stored")
                     continue
-                print(
-                    f"[auth] {email}: a browser tab opens. Pick THIS account and accept."
-                )
-                res = await session.call_tool(
-                    "start_google_auth",
-                    {"service_name": "gmail", "user_google_email": email},
-                )
-                text = res.content[0].text
-                if "http" in text:
-                    url = next(w for w in text.split() if w.startswith("http"))
-                    print(f"       If no tab opened, use: {url.rstrip(').,')}")
-                for _ in range(90):  # 3 minutes
-                    await asyncio.sleep(2)
-                    if email in await stored_accounts(session):
-                        print(f"[ok]   {email} stored")
-                        break
-                else:
-                    print(f"[skip] {email}: no login within 3 minutes")
+                await login(session, email)
             print()
             res = await session.call_tool("list_gmail_accounts", {})
             print(res.content[0].text)

@@ -61,6 +61,29 @@ def _is_port_free(host: str, port: int) -> bool:
         return False
 
 
+def preferred_port() -> int:
+    """The callback port the user asked for.
+
+    WORKSPACE_MCP_PORT wins when set: it names this server on purpose, while
+    PORT is exported by many hosts for unrelated reasons and used to move the
+    callback off the port the redirect URI was registered with.
+    """
+    explicit = os.getenv("WORKSPACE_MCP_PORT")
+    generic = os.getenv("PORT")
+    env_name = "WORKSPACE_MCP_PORT" if explicit else "PORT"
+    raw = explicit or generic or str(DEFAULT_PREFERRED_PORT)
+    if explicit and generic and generic != explicit:
+        logger.warning(
+            "PORT=%s ignored for the OAuth callback; WORKSPACE_MCP_PORT=%s wins",
+            generic,
+            explicit,
+        )
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise PortConfigError(f"{env_name} must be an integer, got {raw!r}") from exc
+
+
 def resolve_port(
     preferred: Optional[int] = None,
     fallback_count: Optional[int] = None,
@@ -84,16 +107,7 @@ def resolve_port(
     candidate is in use, or PortConfigError if a port env var is invalid.
     """
     if preferred is None:
-        raw = os.getenv(
-            "PORT", os.getenv("WORKSPACE_MCP_PORT", str(DEFAULT_PREFERRED_PORT))
-        )
-        try:
-            preferred = int(raw)
-        except ValueError as exc:
-            env_name = "PORT" if os.getenv("PORT") else "WORKSPACE_MCP_PORT"
-            raise PortConfigError(
-                f"{env_name} must be an integer, got {raw!r}"
-            ) from exc
+        preferred = preferred_port()
     if fallback_count is None:
         raw = os.getenv(
             "WORKSPACE_MCP_PORT_FALLBACK_COUNT", str(DEFAULT_FALLBACK_COUNT)

@@ -6,11 +6,12 @@ import json
 import jwt
 import logging
 import os
+import sys
 import threading
 import webbrowser
 
 from typing import List, Optional, Tuple, Dict, Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlsplit
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -21,7 +22,7 @@ from googleapiclient.errors import HttpError
 import httplib2
 import google_auth_httplib2
 from auth.scopes import SCOPES, get_current_scopes, has_required_scopes  # noqa
-from auth.allowlist import enforce_allowlist
+from auth.allowlist import EmailNotAllowedError, enforce_allowlist
 from auth.oauth21_session_store import get_oauth21_session_store
 from auth.credential_store import get_credential_store
 from auth.gateway_identity import normalize_principal_email
@@ -513,16 +514,111 @@ async def _determine_oauth_prompt(
 # --- Core OAuth Logic ---
 
 
+def is_headless() -> bool:
+    """True when no browser on this host can reach the loopback callback.
+
+    Then the tab is never opened, the callback listener is never started, and
+    the user pastes Google's redirect back through complete_google_auth.
+    """
+    if os.getenv("WORKSPACE_MCP_NO_BROWSER", "").lower() in ("1", "true", "yes"):
+        return True
+    if os.getenv("SSH_CONNECTION"):
+        return True
+    return sys.platform.startswith("linux") and not (
+        os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY")
+    )
+
+
+PASTE_BACK_LINES = [
+    "   The page after sign-in will NOT load (it points at localhost on the server). That is expected.",
+    "   Copy the full address from the browser's address bar and pass it to `complete_google_auth`.",
+]
+
+
 def _should_open_browser(requested: bool = True) -> bool:
     """Only an explicit start_google_auth call in local stdio may open a tab.
 
     A tool call that merely finds no credentials returns the URL instead, so
-    the AI never pops a browser on the user. WORKSPACE_MCP_NO_BROWSER=1 turns
-    the tab off everywhere.
+    the AI never pops a browser on the user. is_headless() turns the tab off.
     """
     if not requested or get_transport_mode() != "stdio" or is_oauth21_enabled():
         return False
-    return os.getenv("WORKSPACE_MCP_NO_BROWSER", "").lower() not in ("1", "true", "yes")
+    return not is_headless()
+
+
+def _callback_query(pasted: str) -> str:
+    """Take the query string out of whatever the user pasted.
+
+    Accepts a full redirect URL, a bare `code=...&state=...` fragment, or a raw
+    code. Host and scheme are ignored on purpose: the redirect landed on a
+    localhost that was not this machine.
+    """
+    text = pasted.strip()
+    if "?" in text or "://" in text:
+        return urlsplit(text).query
+    if "=" in text:
+        return text.lstrip("?&")
+    return urlencode({"code": text})
+
+
+async def complete_auth(
+    authorization_response: str, *, session_id: Optional[str] = None
+) -> str:
+    """Finish a sign-in from a pasted redirect. Returns the stored email.
+
+    Shared by the complete_google_auth tool and scripts/auth.py so the paste
+    path never needs the loopback listener. Every failure is raised with a
+    message that names the cause; tokens never appear in it.
+    """
+    params = {
+        k: v[0] for k, v in parse_qs(_callback_query(authorization_response)).items()
+    }
+    if "error" in params:
+        raise GoogleAuthenticationError(
+            f"Google returned an error: {params['error']}. Call start_google_auth again."
+        )
+    if "code" not in params:
+        raise GoogleAuthenticationError(
+            "No authorization code found in what was pasted. Paste the full address "
+            "from the browser's address bar after signing in."
+        )
+    if "state" not in params:
+        # ponytail: private peek. A bare code names no state, so take the newest one.
+        states = get_oauth21_session_store()._oauth_states
+        newest = max(states, key=lambda s: states[s]["created_at"], default=None)
+        if newest is None:
+            raise GoogleAuthenticationError(
+                "No sign-in is waiting for a code. Call start_google_auth first, "
+                "then paste the full address."
+            )
+        params["state"] = newest
+
+    redirect_uri = get_oauth_redirect_uri()
+    try:
+        email, _ = await handle_auth_callback(
+            scopes=get_current_scopes(),
+            authorization_response=f"{redirect_uri}?{urlencode(params)}",
+            redirect_uri=redirect_uri,
+            session_id=session_id,
+        )
+    except (EmailNotAllowedError, GoogleAuthenticationError):
+        raise
+    except ValueError as exc:
+        if "state" in str(exc):
+            raise GoogleAuthenticationError(
+                "This sign-in link has expired or was already used (links last 10 "
+                "minutes and work once). Call start_google_auth again and paste "
+                "the new address."
+            ) from exc
+        raise
+    except Exception as exc:
+        if "invalid_grant" in str(exc):
+            raise GoogleAuthenticationError(
+                "Google rejected the code: it was already used or has expired. "
+                "Call start_google_auth again and paste the new address."
+            ) from exc
+        raise
+    return email
 
 
 async def start_auth_flow(
@@ -674,6 +770,8 @@ async def start_auth_flow(
                 f"1. Open this URL in your browser to authorize {service_name} access using all required permissions:",
                 f"   Authorization URL: {auth_url}",
             ]
+            if get_transport_mode() == "stdio":
+                message_lines.extend(PASTE_BACK_LINES)
         session_info_for_llm = ""
 
         if not initial_email_provided:
