@@ -4192,8 +4192,16 @@ async def _verify_batch_label_changes(
     unwanted = set(remove_label_ids or ())
     statuses: Dict[str, str] = {}
 
-    for chunk_start in range(0, len(message_ids), GMAIL_BATCH_SIZE):
-        chunk_ids = message_ids[chunk_start : chunk_start + GMAIL_BATCH_SIZE]
+    # Fork change: chunks of GMAIL_BATCH_SIZE (25) trip Gmail's per-user
+    # concurrency limit, because the batch endpoint runs every get in a chunk
+    # concurrently server-side. Use the smaller read chunk and pace the chunks,
+    # the same way _fetch_search_result_headers does.
+    for chunk_start in range(0, len(message_ids), GMAIL_SEARCH_HEADER_BATCH_SIZE):
+        if chunk_start:
+            await asyncio.sleep(GMAIL_REQUEST_DELAY)
+        chunk_ids = message_ids[
+            chunk_start : chunk_start + GMAIL_SEARCH_HEADER_BATCH_SIZE
+        ]
         results: Dict[str, Dict] = {}
         batch_completed = False
 
