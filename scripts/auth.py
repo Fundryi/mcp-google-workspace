@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
@@ -21,6 +22,12 @@ from mcp.client.stdio import stdio_client
 
 ROOT = Path(__file__).resolve().parent.parent
 ROUTER_JSON = ROOT / "mcp-router.local.json"
+SERVER_LOG = Path(tempfile.gettempdir()) / "mcp-google-workspace-auth.log"
+
+
+def link(url: str, label: str) -> str:
+    """OSC 8 hyperlink: terminals that support it show a short clickable label."""
+    return f"\033]8;;{url}\033\\{label}\033]8;;\033\\"
 
 
 def load_server():
@@ -60,8 +67,13 @@ async def login(session, email: str) -> None:
     if url is None:
         print(f"[fail] {email}: {text}")
         return
-    print(f"[auth] {email}: open this URL, pick THIS account, accept.")
-    print(f"       {url.rstrip(').,')}")
+    url = url.rstrip(").,")
+    print()
+    print(
+        f"[auth] {email}: {link(url, 'click here to sign in')}, pick THIS account, accept."
+    )
+    print("       If the link is not clickable, Ctrl+click or copy this:")
+    print(f"       {url}")
     print("       Then paste the address of the page you land on.")
     pasted = await asyncio.to_thread(
         input, "       Paste here (or press Enter if the tab finished by itself): "
@@ -83,18 +95,20 @@ async def login(session, email: str) -> None:
 async def main() -> int:
     params = load_server()
     emails = wanted_emails(params.env)
-    async with stdio_client(params) as (r, w):
-        async with ClientSession(r, w) as session:
-            await session.initialize()
-            done = await stored_accounts(session)
-            for email in emails:
-                if email in done:
-                    print(f"[ok]   {email} already stored")
-                    continue
-                await login(session, email)
-            print()
-            res = await session.call_tool("list_gmail_accounts", {})
-            print(res.content[0].text)
+    print(f"Server log goes to {SERVER_LOG}")
+    with SERVER_LOG.open("w", encoding="utf-8") as errlog:
+        async with stdio_client(params, errlog=errlog) as (r, w):
+            async with ClientSession(r, w) as session:
+                await session.initialize()
+                done = await stored_accounts(session)
+                for email in emails:
+                    if email in done:
+                        print(f"[ok]   {email} already stored")
+                        continue
+                    await login(session, email)
+                print()
+                res = await session.call_tool("list_gmail_accounts", {})
+                print(res.content[0].text)
     return 0
 
 
