@@ -106,13 +106,15 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 | cc | string | no | | |
 | bcc | string | no | | |
 | from_name | string | no | | Display name |
-| from_email | string | no | | Send As alias |
+| from_email | string | no | Gmail default | Send As alias; when omitted, resolves `isDefault`, then `isPrimary`, then the first Send-As entry, and finally the authenticated email if no usable entry is available |
 | thread_id | string | no | | For reply drafts |
 | in_reply_to | string | no | | RFC Message-ID |
 | references | string | no | | Message-ID chain |
 | attachments | array | no | | Same format as send |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
+
+Operational Gmail settings errors such as rate limits abort draft creation instead of silently falling back to a potentially unintended sender.
 
 ---
 

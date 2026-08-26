@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from gdrive.drive_helpers import (
     build_drive_list_params,
     has_explicit_trashed_clause,
+    resolve_drive_item,
 )
 from gdrive.drive_tools import (
     create_drive_file,
@@ -1960,6 +1961,41 @@ async def test_import_to_google_doc_accepts_markdown_content(mock_resolve_folder
 
 
 # ---------------------------------------------------------------------------
+# Drive shortcut resolution
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resolve_drive_item_can_preserve_shortcut_resource():
+    """Metadata mutations can opt out of shortcut dereferencing."""
+    mock_service = Mock()
+    files_resource = Mock()
+    mock_service.files.return_value = files_resource
+    request = Mock()
+    files_resource.get.return_value = request
+    request.execute.return_value = {
+        "id": "shortcut123",
+        "name": "Agenda shortcut",
+        "mimeType": "application/vnd.google-apps.shortcut",
+        "shortcutDetails": {"targetId": "doc456"},
+    }
+
+    resolved_id, metadata = await resolve_drive_item(
+        mock_service,
+        "shortcut123",
+        follow_shortcuts=False,
+    )
+
+    assert resolved_id == "shortcut123"
+    assert metadata["mimeType"] == "application/vnd.google-apps.shortcut"
+    files_resource.get.assert_called_once_with(
+        fileId="shortcut123",
+        fields="id, mimeType, parents, shortcutDetails(targetId, targetMimeType)",
+        supportsAllDrives=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # update_drive_file — in-place content replacement with conversion
 # ---------------------------------------------------------------------------
 
@@ -1988,6 +2024,15 @@ async def test_update_drive_file_replaces_content_with_conversion(mock_resolve_i
         source_format="md",
     )
 
+    mock_resolve_item.assert_awaited_once_with(
+        mock_service,
+        "doc123",
+        extra_fields=(
+            "name, description, mimeType, parents, starred, trashed, webViewLink, "
+            "writersCanShare, copyRequiresWriterPermission, properties"
+        ),
+        follow_shortcuts=False,
+    )
     update_kwargs = mock_service.files.return_value.update.call_args.kwargs
     assert update_kwargs["fileId"] == "doc123"
     assert update_kwargs["media_body"].mimetype() == "text/markdown"
@@ -2284,7 +2329,7 @@ async def test_update_drive_file_rejects_content_for_non_editable_google_types(
 @pytest.mark.asyncio
 @patch("gdrive.drive_tools.resolve_drive_item", new_callable=AsyncMock)
 async def test_update_drive_file_metadata_only_uploads_no_media(mock_resolve_item):
-    """A metadata-only update sends no media_body."""
+    """An ordinary metadata-only update sends no media_body."""
     mock_resolve_item.return_value = ("file123", {"name": "Old Name"})
     mock_service = Mock()
     mock_service.files().update().execute.return_value = {
@@ -2303,6 +2348,157 @@ async def test_update_drive_file_metadata_only_uploads_no_media(mock_resolve_ite
     update_kwargs = mock_service.files.return_value.update.call_args.kwargs
     assert "media_body" not in update_kwargs
     assert "Successfully updated file" in result
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_drive_item", new_callable=AsyncMock)
+async def test_update_drive_file_metadata_only_preserves_shortcut_resource(
+    mock_resolve_item,
+):
+    """Metadata-only updates act on the supplied shortcut rather than its target."""
+    shortcut_metadata = {
+        "name": "Agenda shortcut",
+        "mimeType": "application/vnd.google-apps.shortcut",
+        "trashed": False,
+    }
+    mock_resolve_item.return_value = ("shortcut123", shortcut_metadata)
+    mock_service = Mock()
+    mock_service.files().update().execute.return_value = {
+        "id": "shortcut123",
+        "name": "Agenda shortcut",
+        "mimeType": "application/vnd.google-apps.shortcut",
+        "trashed": True,
+        "webViewLink": "https://drive.google.com/file/d/shortcut123",
+    }
+
+    result = await _unwrap(update_drive_file)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        file_id="shortcut123",
+        trashed=True,
+    )
+
+    mock_resolve_item.assert_awaited_once_with(
+        mock_service,
+        "shortcut123",
+        extra_fields=(
+            "name, description, mimeType, parents, starred, trashed, webViewLink, "
+            "writersCanShare, copyRequiresWriterPermission, properties"
+        ),
+        follow_shortcuts=False,
+    )
+    update_kwargs = mock_service.files.return_value.update.call_args.kwargs
+    assert update_kwargs["fileId"] == "shortcut123"
+    assert update_kwargs["body"] == {"trashed": True}
+    assert "media_body" not in update_kwargs
+    assert "File moved to trash" in result
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_drive_item", new_callable=AsyncMock)
+async def test_update_drive_file_shortcut_content_update_follows_target(
+    mock_resolve_item,
+):
+    """Content controls inspect the shortcut and then apply to the target."""
+    mock_resolve_item.side_effect = [
+        (
+            "shortcut123",
+            {
+                "name": "Agenda shortcut",
+                "mimeType": "application/vnd.google-apps.shortcut",
+            },
+        ),
+        ("doc456", {"name": "Agenda", "mimeType": "text/markdown"}),
+    ]
+    mock_service = Mock()
+    mock_service.files().update().execute.return_value = {
+        "id": "doc456",
+        "name": "Agenda",
+        "mimeType": "text/markdown",
+        "webViewLink": "https://drive.google.com/file/d/doc456",
+    }
+
+    await _unwrap(update_drive_file)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        file_id="shortcut123",
+        content="# Updated agenda",
+        mime_type="text/plain",
+    )
+
+    assert [
+        call.kwargs["follow_shortcuts"] for call in mock_resolve_item.await_args_list
+    ] == [
+        False,
+        True,
+    ]
+    update_kwargs = mock_service.files.return_value.update.call_args.kwargs
+    assert update_kwargs["fileId"] == "doc456"
+    assert update_kwargs["body"] == {"mimeType": "text/plain"}
+    assert "media_body" in update_kwargs
+
+
+@pytest.mark.asyncio
+@patch("gdrive.drive_tools.resolve_drive_item", new_callable=AsyncMock)
+async def test_update_drive_file_rejects_mixed_shortcut_content_and_metadata(
+    mock_resolve_item,
+):
+    """A mixed call cannot accidentally trash the underlying shortcut target."""
+    mock_resolve_item.return_value = (
+        "shortcut123",
+        {
+            "name": "Agenda shortcut",
+            "mimeType": "application/vnd.google-apps.shortcut",
+        },
+    )
+    mock_service = Mock()
+
+    with pytest.raises(ValueError, match="separate calls"):
+        await _unwrap(update_drive_file)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            file_id="shortcut123",
+            content="# Updated agenda",
+            trashed=True,
+        )
+
+    mock_resolve_item.assert_awaited_once()
+    mock_service.files.return_value.update.return_value.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unsupported_update",
+    [
+        {"mime_type": "text/plain"},
+        {"writers_can_share": False},
+        {"copy_requires_writer_permission": True},
+    ],
+)
+@patch("gdrive.drive_tools.resolve_drive_item", new_callable=AsyncMock)
+async def test_update_drive_file_rejects_unsupported_shortcut_metadata(
+    mock_resolve_item,
+    unsupported_update,
+):
+    """Content and permission controls are not treated as shortcut-local metadata."""
+    mock_resolve_item.return_value = (
+        "shortcut123",
+        {
+            "name": "Agenda shortcut",
+            "mimeType": "application/vnd.google-apps.shortcut",
+        },
+    )
+    mock_service = Mock()
+
+    with pytest.raises(ValueError, match="cannot be updated on a Drive shortcut"):
+        await _unwrap(update_drive_file)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            file_id="shortcut123",
+            **unsupported_update,
+        )
+
+    mock_service.files.return_value.update.return_value.execute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

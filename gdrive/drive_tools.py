@@ -47,6 +47,7 @@ from gdrive.drive_helpers import (
     GOOGLE_SHEETS_MIME_TYPE,
     GOOGLE_SLIDES_IMPORT_FORMATS,
     GOOGLE_SLIDES_MIME_TYPE,
+    SHORTCUT_MIME_TYPE,
     UPLOAD_CHUNK_SIZE_BYTES,
     _resolve_import_media,
     _stream_url_with_validation,
@@ -221,7 +222,7 @@ async def search_drive_files(
              Includes a nextPageToken line when more results are available.
     """
     logger.info(
-        f"[search_drive_files] Invoked. Email: '{user_google_email}', Query: '{query}', "
+        f"[search_drive_files] Invoked. Email: '{user_google_email}', query_len={len(query)}, "
         f"file_type: '{file_type}', include_trashed: {include_trashed}"
     )
 
@@ -231,14 +232,14 @@ async def search_drive_files(
 
     if is_structured_query:
         final_query = query
-        logger.info(
+        logger.debug(
             f"[search_drive_files] Using structured query as-is: '{final_query}'"
         )
     else:
         # For free text queries, wrap in fullText contains
         escaped_query = query.replace("'", "\\'")
         final_query = f"fullText contains '{escaped_query}'"
-        logger.info(
+        logger.debug(
             f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'"
         )
 
@@ -1003,8 +1004,11 @@ async def create_drive_file(
         str: Confirmation message of the successful file creation with file link.
     """
     logger.info(
-        f"[create_drive_file] Invoked. Email: '{user_google_email}', File Name: {file_name}, Folder ID: {folder_id}, fileUrl: {fileUrl}"
+        f"[create_drive_file] Invoked. Email: '{user_google_email}', "
+        f"file_name_len={len(file_name) if file_name else 0}, Folder ID: {folder_id}, "
+        f"has_fileUrl={bool(fileUrl)}"
     )
+    logger.debug(f"[create_drive_file] File Name: {file_name}")
 
     has_existing_content_source = content is not None or bool(fileUrl)
     if (
@@ -1065,7 +1069,7 @@ async def create_drive_file(
         )
     # Prefer fileUrl if both legacy sources are provided.
     elif fileUrl:
-        logger.info(f"[create_drive_file] Fetching file from URL: {fileUrl}")
+        logger.info("[create_drive_file] Fetching file from provided URL")
 
         # Check if this is a file:// URL
         parsed_url = urlparse(fileUrl)
@@ -1089,26 +1093,36 @@ async def create_drive_file(
             file_path = url2pathname(raw_path)
 
             # Validate path safety and verify file exists
-            path_obj = validate_file_path(file_path)
+            try:
+                path_obj = validate_file_path(file_path)
+            except (OSError, ValueError) as exc:
+                raise ValueError(
+                    f"Local file could not be accessed ({type(exc).__name__})."
+                ) from None
             if not path_obj.exists():
                 extra = (
                     " The server is running via streamable-http, so file:// URLs must point to files inside the container or remote host."
                     if running_streamable
                     else ""
                 )
-                raise Exception(f"Local file does not exist: {file_path}.{extra}")
+                raise Exception(f"Local file does not exist.{extra}")
             if not path_obj.is_file():
                 extra = (
                     " In streamable-http/Docker deployments, mount the file into the container or provide an HTTP(S) URL."
                     if running_streamable
                     else ""
                 )
-                raise Exception(f"Path is not a file: {file_path}.{extra}")
+                raise Exception(f"Local path is not a file.{extra}")
 
-            logger.info(f"[create_drive_file] Reading local file: {file_path}")
+            logger.info("[create_drive_file] Reading local file")
 
             # Read file and upload
-            file_data = await asyncio.to_thread(path_obj.read_bytes)
+            try:
+                file_data = await asyncio.to_thread(path_obj.read_bytes)
+            except OSError as exc:
+                raise OSError(
+                    f"Failed to read local file ({type(exc).__name__})."
+                ) from None
             total_bytes = len(file_data)
             logger.info(f"[create_drive_file] Read {total_bytes} bytes from local file")
 
@@ -1281,8 +1295,10 @@ async def _import_with_conversion(
     """
     logger.info(
         f"[{tool_name}] Invoked. Email: '{user_google_email}', "
-        f"File Name: '{file_name}', Source Format: '{source_format}', Folder ID: '{folder_id}'"
+        f"file_name_len={len(file_name) if file_name else 0}, "
+        f"Source Format: '{source_format}', Folder ID: '{folder_id}'"
     )
+    logger.debug(f"[{tool_name}] File Name: '{file_name}'")
 
     media, source_mime_type, remote_file_data = await _resolve_import_media(
         tool_name=tool_name,
@@ -1744,9 +1760,11 @@ async def check_drive_file_public_access(
         str: Information about the file's sharing status and whether it can be used in Google Docs.
     """
     logger.info(
-        f"[check_drive_file_public_access] Searching for {file_name}"
+        f"[check_drive_file_public_access] Invoked. "
+        f"file_name_len={len(file_name) if file_name else 0}"
         + (f" within drive_id={drive_id}" if drive_id else "")
     )
+    logger.debug(f"[check_drive_file_public_access] Searching for {file_name}")
 
     # Search for the file
     escaped_name = file_name.replace("'", "\\'")
@@ -1882,18 +1900,30 @@ async def update_drive_file(
     server-side, so only the new text has to be supplied — no need to send the whole
     file back to rewrite it.
 
+    Drive shortcuts are handled according to the kind of update: supported
+    resource-local metadata changes (rename, move, trash, star, description, and
+    custom properties) apply to the supplied shortcut, while content replacement
+    follows the shortcut and updates its target. To avoid applying metadata to the
+    wrong resource, a shortcut call cannot combine content with resource-local
+    metadata. Update the shortcut metadata and target content in separate calls.
+
     Args:
         user_google_email (str): The user's Google email address. Required.
         file_id (str): The ID of the file to update. Required.
         name (Optional[str]): New name for the file.
         description (Optional[str]): New description for the file.
-        mime_type (Optional[str]): New MIME type (note: changing type may require content upload).
+        mime_type (Optional[str]): New MIME type (note: changing type may require
+            content upload). For a shortcut ID, this must accompany content and applies
+            to the resolved target.
         add_parents (Optional[str]): Comma-separated folder IDs to add as parents.
         remove_parents (Optional[str]): Comma-separated folder IDs to remove from parents.
         starred (Optional[bool]): Whether to star/unstar the file.
         trashed (Optional[bool]): Whether to move file to/from trash.
-        writers_can_share (Optional[bool]): Whether editors can share the file.
-        copy_requires_writer_permission (Optional[bool]): Whether copying requires writer permission.
+        writers_can_share (Optional[bool]): Whether editors can share the file. Pass the
+            target ID directly; this cannot be changed on a shortcut resource.
+        copy_requires_writer_permission (Optional[bool]): Whether copying requires writer
+            permission. Pass the target ID directly; this cannot be changed on a
+            shortcut resource.
         properties (Optional[dict]): Custom key-value properties for the file.
         content (Optional[str]): New text content for text-based formats (markdown, TXT, HTML).
         file_path (Optional[str]): Local file path for binary formats (DOCX, ODT). Supports file:// URLs.
@@ -1925,15 +1955,75 @@ async def update_drive_file(
             "'file_path' and 'file_url' are only supported with mode='replace'."
         )
 
+    replacing_content = any(x is not None for x in (content, file_path, file_url))
     current_file_fields = (
         "name, description, mimeType, parents, starred, trashed, webViewLink, "
         "writersCanShare, copyRequiresWriterPermission, properties"
     )
+    supplied_file_id = file_id
     resolved_file_id, current_file = await resolve_drive_item(
         service,
-        file_id,
+        supplied_file_id,
         extra_fields=current_file_fields,
+        # Inspect the supplied resource before deciding whether a content update may
+        # safely follow a shortcut. This prevents metadata in a mixed call from being
+        # silently applied to the shortcut target.
+        follow_shortcuts=False,
     )
+    supplied_file_is_shortcut = current_file.get("mimeType") == SHORTCUT_MIME_TYPE
+
+    if supplied_file_is_shortcut:
+        resource_local_updates = [
+            field
+            for field, requested in (
+                ("name", name is not None),
+                ("description", description is not None),
+                ("add_parents", bool(add_parents)),
+                ("remove_parents", bool(remove_parents)),
+                ("starred", starred is not None),
+                ("trashed", trashed is not None),
+                ("writers_can_share", writers_can_share is not None),
+                (
+                    "copy_requires_writer_permission",
+                    copy_requires_writer_permission is not None,
+                ),
+                ("properties", properties is not None),
+            )
+            if requested
+        ]
+        if replacing_content and resource_local_updates:
+            raise ValueError(
+                "Content and shortcut-local metadata cannot be updated in one call "
+                f"({', '.join(resource_local_updates)}). Update the shortcut metadata "
+                "and target content in separate calls."
+            )
+
+        unsupported_shortcut_updates = [
+            field
+            for field, requested in (
+                ("mime_type", mime_type is not None and not replacing_content),
+                ("writers_can_share", writers_can_share is not None),
+                (
+                    "copy_requires_writer_permission",
+                    copy_requires_writer_permission is not None,
+                ),
+            )
+            if requested
+        ]
+        if unsupported_shortcut_updates:
+            raise ValueError(
+                "These fields cannot be updated on a Drive shortcut: "
+                f"{', '.join(unsupported_shortcut_updates)}. Pass the target file ID "
+                "to change target MIME or permission controls."
+            )
+
+        if replacing_content:
+            resolved_file_id, current_file = await resolve_drive_item(
+                service,
+                supplied_file_id,
+                extra_fields=current_file_fields,
+                follow_shortcuts=True,
+            )
     file_id = resolved_file_id
 
     # Build the update body with only specified fields
@@ -1990,7 +2080,6 @@ async def update_drive_file(
     # Native Google files take replacement content through Drive's import conversion
     # (the engine import_to_google_doc uses); any other file has nothing to convert,
     # so its bytes stream back verbatim under the same file ID.
-    replacing_content = any(x is not None for x in (content, file_path, file_url))
     remote_file_data = None
     format_map = None
     content_update_lock = (

@@ -11,6 +11,7 @@ import re
 import uuid
 import json
 from typing import List, Optional, Dict, Any, Union
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytz
 from googleapiclient.errors import HttpError
@@ -317,6 +318,38 @@ def _strip_utc_offset(datetime_str: str) -> str:
     return re.sub(r"[+-]\d{2}:\d{2}$", "", datetime_str)
 
 
+def _build_time_boundary(time_value: str, timezone: Optional[str]) -> Dict[str, str]:
+    """Build one Google ``start``/``end`` boundary from a time string and its zone.
+
+    Each boundary carries its OWN ``timeZone``, which is what makes a cross-timezone
+    event expressible: a flight departing 13:45 Asia/Jerusalem and landing 17:50
+    Europe/Amsterdam is one event whose two ends are authored in different zones.
+    Forcing a single zone on both ends silently rewrites one of them -- the arrival
+    above becomes 17:50 Israel time, an hour off, with no error raised.
+    """
+    if "T" not in time_value:
+        return {"date": time_value}
+    # `is None` rather than falsy: an explicitly empty zone is an invalid value, not
+    # an omitted one, and must reach validation below instead of being treated as
+    # "no zone given".
+    if timezone is None:
+        return {"dateTime": time_value}
+    # Reject an unresolvable zone here rather than stripping the caller's offset and
+    # forwarding a name Google will refuse. Falling back to the offset instead would
+    # be worse than erroring: it silently discards the zone the caller asked for and
+    # books the event somewhere else.
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(
+            f"Unrecognized IANA timezone {timezone!r}. Use a zone name such as "
+            "'America/New_York' or 'Europe/Amsterdam'."
+        ) from exc
+    # With an IANA zone present, drop any caller-supplied offset so Google resolves
+    # the DST-correct one from the zone name itself (see _strip_utc_offset).
+    return {"dateTime": _strip_utc_offset(time_value), "timeZone": timezone}
+
+
 @server.tool(
     title="List Calendars",
     annotations=ToolAnnotations(
@@ -401,7 +434,7 @@ async def get_events(
         str: A formatted list of events (summary, start and end times, link) within the specified range, or detailed information for a single event if event_id is provided.
     """
     logger.info(
-        f"[get_events] Raw parameters - event_id: '{event_id}', time_min: '{time_min}', time_max: '{time_max}', query: '{query}', detailed: {detailed}, include_attachments: {include_attachments}"
+        f"[get_events] Raw parameters - event_id: '{event_id}', time_min: '{time_min}', time_max: '{time_max}', query_len={len(query) if query else 0}, detailed: {detailed}, include_attachments: {include_attachments}"
     )
 
     # Handle single event retrieval
@@ -438,7 +471,7 @@ async def get_events(
             )
 
         logger.info(
-            f"[get_events] Final API parameters - calendarId: '{calendar_id}', timeMin: '{effective_time_min}', timeMax: '{effective_time_max}', maxResults: {max_results}, query: '{query}'"
+            f"[get_events] Final API parameters - calendarId: '{calendar_id}', timeMin: '{effective_time_min}', timeMax: '{effective_time_max}', maxResults: {max_results}, query_len={len(query) if query else 0}"
         )
 
         # Build the request parameters dynamically
@@ -651,35 +684,29 @@ async def _create_event_impl(
     guests_can_invite_others: Optional[bool] = None,
     guests_can_see_other_guests: Optional[bool] = None,
     send_updates: str = "all",
+    *,
+    start_timezone: Optional[str] = None,
+    end_timezone: Optional[str] = None,
 ) -> str:
     """Internal implementation for creating a calendar event."""
     logger.info(
-        f"[create_event] Invoked. Email: '{user_google_email}', Summary: {summary}"
+        f"[create_event] Invoked. Email: '{user_google_email}', summary_len={len(summary) if summary else 0}"
     )
-    logger.info(f"[create_event] Incoming attachments param: {attachments}")
+    logger.debug(f"[create_event] Incoming attachments param: {attachments}")
     # If attachments value is a string, split by comma and strip whitespace
     if attachments and isinstance(attachments, str):
         attachments = [a.strip() for a in attachments.split(",") if a.strip()]
-        logger.info(
+        logger.debug(
             f"[create_event] Parsed attachments list from string: {attachments}"
         )
-    # When an IANA timezone is provided, strip any UTC offset from dateTime values
-    # so Google Calendar resolves the correct DST-aware offset from the IANA name.
-    effective_start = start_time
-    effective_end = end_time
-    if timezone and "T" in start_time:
-        effective_start = _strip_utc_offset(start_time)
-    if timezone and "T" in end_time:
-        effective_end = _strip_utc_offset(end_time)
+    # Each boundary resolves its own zone, falling back to the event-wide timezone.
     event_body: Dict[str, Any] = {
         "summary": summary,
-        "start": (
-            {"date": start_time}
-            if "T" not in start_time
-            else {"dateTime": effective_start}
+        "start": _build_time_boundary(
+            start_time, start_timezone if start_timezone is not None else timezone
         ),
-        "end": (
-            {"date": end_time} if "T" not in end_time else {"dateTime": effective_end}
+        "end": _build_time_boundary(
+            end_time, end_timezone if end_timezone is not None else timezone
         ),
     }
     if recurrence:
@@ -688,11 +715,6 @@ async def _create_event_impl(
         event_body["location"] = location
     if description:
         event_body["description"] = description
-    if timezone:
-        if "dateTime" in event_body["start"]:
-            event_body["start"]["timeZone"] = timezone
-        if "dateTime" in event_body["end"]:
-            event_body["end"]["timeZone"] = timezone
     if attendees:
         event_body["attendees"] = [{"email": email} for email in attendees]
 
@@ -778,7 +800,7 @@ async def _create_event_impl(
                     match = re.search(r"(?:/d/|/file/d/|id=)([\w-]+)", att)
                     file_id = match.group(1) if match else None
                     logger.info(
-                        f"[create_event] Extracted file_id '{file_id}' from attachment URL '{att}'"
+                        f"[create_event] Extracted file_id '{file_id}' from attachment URL"
                     )
                 else:
                     file_id = att
@@ -894,7 +916,7 @@ def _normalize_attendees(
             normalized.append(att)
         else:
             logger.warning(
-                f"[_normalize_attendees] Invalid attendee format: {att}, skipping"
+                f"[_normalize_attendees] Invalid attendee format (type={type(att).__name__}), skipping"
             )
     return normalized if normalized else None
 
@@ -923,6 +945,9 @@ async def _modify_event_impl(
     guests_can_invite_others: Optional[bool] = None,
     guests_can_see_other_guests: Optional[bool] = None,
     send_updates: str = "all",
+    *,
+    start_timezone: Optional[str] = None,
+    end_timezone: Optional[str] = None,
 ) -> str:
     """Internal implementation for modifying a calendar event."""
     logger.info(
@@ -934,25 +959,13 @@ async def _modify_event_impl(
     if summary is not None:
         event_body["summary"] = summary
     if start_time is not None:
-        effective_start = start_time
-        if timezone is not None and "T" in start_time:
-            effective_start = _strip_utc_offset(start_time)
-        event_body["start"] = (
-            {"date": start_time}
-            if "T" not in start_time
-            else {"dateTime": effective_start}
+        event_body["start"] = _build_time_boundary(
+            start_time, start_timezone if start_timezone is not None else timezone
         )
-        if timezone is not None and "dateTime" in event_body["start"]:
-            event_body["start"]["timeZone"] = timezone
     if end_time is not None:
-        effective_end = end_time
-        if timezone is not None and "T" in end_time:
-            effective_end = _strip_utc_offset(end_time)
-        event_body["end"] = (
-            {"date": end_time} if "T" not in end_time else {"dateTime": effective_end}
+        event_body["end"] = _build_time_boundary(
+            end_time, end_timezone if end_timezone is not None else timezone
         )
-        if timezone is not None and "dateTime" in event_body["end"]:
-            event_body["end"]["timeZone"] = timezone
     if description is not None:
         event_body["description"] = description
     if location is not None:
@@ -1298,7 +1311,7 @@ async def _rsvp_event_impl(
 
     summary = updated_event.get("summary", "Unknown event")
     logger.info(
-        f"[rsvp_event] RSVP for '{summary}' (ID: {event_id}) set to '{response}' for {user_google_email}."
+        f"[rsvp_event] RSVP for event {event_id} set to '{response}' for {user_google_email}."
     )
     return f"Successfully updated RSVP for '{summary}' (ID: {event_id}) to '{response}' for {user_google_email}."
 
@@ -1352,6 +1365,9 @@ async def manage_event(
     rsvp_comment: Optional[str] = None,
     send_updates: Optional[str] = None,
     confirm_recurring: bool = False,
+    *,
+    start_timezone: Optional[str] = None,
+    end_timezone: Optional[str] = None,
 ) -> str:
     """
     Manages calendar events. Supports creating, updating, deleting, and RSVP.
@@ -1367,7 +1383,15 @@ async def manage_event(
         description (Optional[str]): Event description.
         location (Optional[str]): Event location.
         attendees (Optional[Union[List[str], List[Dict[str, Any]]]]): Attendee email addresses or objects.
-        timezone (Optional[str]): Timezone (e.g., "America/New_York").
+        timezone (Optional[str]): IANA timezone applied to both boundaries (e.g.,
+            "America/New_York"). Overridden per boundary by start_timezone/end_timezone.
+        start_timezone (Optional[str]): IANA timezone for the start boundary only,
+            overriding timezone. Use for events whose two ends sit in different zones -
+            a flight departing 13:45 "Asia/Jerusalem" and landing 17:50
+            "Europe/Amsterdam" is one event authored in two zones. Passing a single
+            timezone for such an event silently rewrites one end's wall-clock.
+        end_timezone (Optional[str]): IANA timezone for the end boundary only,
+            overriding timezone. See start_timezone.
         attachments (Optional[List[str]]): List of Google Drive file URLs or IDs to attach.
         add_google_meet (Optional[bool]): Whether to add/remove native Google Meet.
         conference_data (Optional[Dict[str, Any]]): Raw Google Calendar `conferenceData`
@@ -1436,6 +1460,8 @@ async def manage_event(
             location=location,
             attendees=attendees,
             timezone=timezone,
+            start_timezone=start_timezone,
+            end_timezone=end_timezone,
             attachments=attachments,
             add_google_meet=add_google_meet or False,
             conference_data=resolved_conference_data,
@@ -1466,6 +1492,8 @@ async def manage_event(
             location=location,
             attendees=attendees,
             timezone=timezone,
+            start_timezone=start_timezone,
+            end_timezone=end_timezone,
             add_google_meet=add_google_meet,
             conference_data=resolved_conference_data,
             reminders=reminders,
@@ -2482,7 +2510,7 @@ async def query_freebusy(
         request_body["calendarExpansionMax"] = calendar_expansion_max
 
     logger.info(
-        f"[query_freebusy] Request body: timeMin={formatted_time_min}, timeMax={formatted_time_max}, calendars={calendar_ids}"
+        f"[query_freebusy] Request body: timeMin={formatted_time_min}, timeMax={formatted_time_max}, calendar_count={len(calendar_ids)}"
     )
 
     # Execute the freebusy query
@@ -2570,7 +2598,7 @@ async def create_calendar(
         str: The ID and summary of the newly created calendar.
     """
     logger.info(
-        f"[create_calendar] Invoked. Email: '{user_google_email}', summary: '{summary}'"
+        f"[create_calendar] Invoked. Email: '{user_google_email}', summary_len={len(summary)}"
     )
 
     body: Dict[str, Any] = {"summary": summary}
@@ -2585,9 +2613,7 @@ async def create_calendar(
 
     calendar_id = result["id"]
     calendar_summary = result.get("summary", summary)
-    logger.info(
-        f"[create_calendar] Created calendar '{calendar_summary}' with ID: {calendar_id}"
-    )
+    logger.info(f"[create_calendar] Created calendar with ID: {calendar_id}")
     return f"Created calendar '{calendar_summary}' (ID: {calendar_id})"
 
 

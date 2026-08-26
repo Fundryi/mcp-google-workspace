@@ -431,11 +431,16 @@ async def resolve_drive_item(
     *,
     extra_fields: Optional[str] = None,
     max_depth: int = 5,
+    follow_shortcuts: bool = True,
 ) -> Tuple[str, Dict[str, Any]]:
     """
-    Resolve a Drive shortcut so downstream callers operate on the real item.
+    Fetch Drive item metadata and optionally resolve shortcuts to their targets.
 
-    Returns the resolved file ID and its metadata. Raises if shortcut targets loop
+    By default shortcuts are followed so content-oriented callers operate on the real
+    item. Set ``follow_shortcuts=False`` for resource-local metadata mutations (rename,
+    move, trash, star, description, etc.) that must act on the shortcut itself.
+
+    Returns the selected file ID and its metadata. Raises if shortcut targets loop
     or exceed max_depth to avoid infinite recursion.
     """
     current_id = file_id
@@ -451,7 +456,7 @@ async def resolve_drive_item(
             .execute
         )
         mime_type = metadata.get("mimeType")
-        if mime_type != SHORTCUT_MIME_TYPE:
+        if not follow_shortcuts or mime_type != SHORTCUT_MIME_TYPE:
             return current_id, metadata
 
         shortcut_details = metadata.get("shortcutDetails") or {}
