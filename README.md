@@ -1,4 +1,10 @@
-<!-- mcp-name: io.github.taylorwilsdon/workspace-mcp -->
+> **Fork notice:** This is a fork of
+> [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)
+> with a handful of additions (multi-account stdio sessions, delegated Gmail
+> write tools, retry/backoff hardening). All credit for the server belongs to
+> the upstream project; use it for the canonical releases, PyPI package, and
+> documentation. This fork is maintained independently and is not published
+> to PyPI or the MCP registry.
 
 <div align="center">
 

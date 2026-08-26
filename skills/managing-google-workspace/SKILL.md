@@ -2,7 +2,8 @@
 name: managing-google-workspace
 description: >
   Manages Google Workspace operations across 12 services (Gmail, Drive, Calendar, Docs, Sheets, Slides, Forms, Tasks, Contacts, Chat, Apps Script, Custom Search).
-  Supports MCP tools or CLI via uvx workspace-mcp --cli. Provides tool routing, workflows, and parameter guidance for 114 tools.
+  Supports MCP tools or CLI via uvx workspace-mcp --cli. Provides tool routing, workflows, and parameter guidance for 150+ tools,
+  including this fork's extended Gmail set (drafts, threads, trash, settings, forwarding, send-as aliases, multi-account).
   Triggers for "check my email", "find a file", "schedule a meeting", "update the spreadsheet", "share a doc",
   "create a presentation", "add a task", "look up a contact", or any mention of Google Workspace services.
 allowed-tools: Bash(uvx workspace-mcp *)
@@ -61,6 +62,8 @@ For server options, transport, auth modes, tool filtering, and deployment: [refe
 ## Universal Patterns
 
 - Consolidated "manage" tools use an `action` parameter for create/update/delete.
+- Several accounts can be signed in at once (this fork); `user_google_email` picks the account on every call. `list_gmail_accounts` shows who is signed in and what each account can do.
+- A tool called without credentials returns the sign-in URL in its error instead of opening a browser (this fork). Give that URL to the user, wait for them to sign in, then retry the original call.
 
 ## Tool Reference
 
@@ -82,6 +85,18 @@ For server options, transport, auth modes, tool filtering, and deployment: [refe
 | List labels | `list_gmail_labels` |
 | Manage filters | `manage_gmail_filter` |
 | List filters | `list_gmail_filters` |
+| List signed-in accounts + their capabilities | `list_gmail_accounts` |
+| Trash / untrash | `trash_gmail_message` / `untrash_gmail_message` / `trash_gmail_thread` / `untrash_gmail_thread` |
+| List/read threads, thread labels | `list_gmail_threads` / `modify_gmail_thread_labels` |
+| Manage drafts | `list_gmail_drafts` / `get_gmail_draft` / `update_gmail_draft` / `send_gmail_draft` / `delete_gmail_draft` |
+| Profile, one label, one filter | `get_gmail_profile` / `get_gmail_label` / `get_gmail_filter` |
+| Vacation responder | `get_gmail_vacation_settings` / `update_gmail_vacation_settings` |
+| IMAP / POP / language settings | `get/update_gmail_imap_settings` / `get/update_gmail_pop_settings` / `get/update_gmail_language_settings` |
+| Auto-forwarding + forwarding addresses | `get/update_gmail_auto_forwarding` / `list/get/create/delete_gmail_forwarding_address(es)` |
+| Send-as aliases + signatures | `list/get/create/update/delete/verify_gmail_send_as` |
+| Push notifications (Pub/Sub) | `watch_gmail_mailbox` / `stop_gmail_mailbox_watch` |
+
+Accounts differ in capability: the sharing-scope writes (send-as and forwarding-address create/update/delete, auto-forwarding update) work only on accounts `list_gmail_accounts` marks `all tools`. When such a call refuses, report it -- do not retry.
 
 For parameters: [references/gmail.md](references/gmail.md)
 

@@ -5,7 +5,7 @@
       "label": "Upstream: check for updates",
       "detail": "Runs on folder open. Fetches upstream and opens UPSTREAM-UPDATE.md when there is something to merge.",
       "type": "shell",
-      "command": "python",
+      "command": "python3",
       "args": ["scripts/check_upstream.py"],
       "runOptions": { "runOn": "folderOpen" },
       "presentation": {

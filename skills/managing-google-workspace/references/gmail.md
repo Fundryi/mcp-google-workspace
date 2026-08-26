@@ -7,6 +7,7 @@ MCP tools for Gmail message search, sending, drafting, labels, and filters. All 
 - Send & Draft: send_gmail_message, draft_gmail_message
 - Label Management: list_gmail_labels, manage_gmail_label, modify_gmail_message_labels, batch_modify_gmail_message_labels
 - Filter Management: list_gmail_filters, manage_gmail_filter
+- Extended Tools (this fork): accounts, trash, threads, drafts, lookups, push notifications, settings (vacation/IMAP/POP/language/forwarding/send-as)
 - Tips
 
 ---
@@ -239,6 +240,78 @@ What changed in the mailbox since a history ID: messages added or deleted, label
 | max_changes | integer | no | 200 | Safety cap |
 
 Gmail keeps history for about a week. An older ID returns 404, which means read the mailbox in full instead. The result hands back the history ID to use next time.
+
+---
+
+## Extended Tools (this fork)
+
+37 additional tools. All take `user_google_email` (string, required) unless noted. Parameters below are exhaustive -- a tool listed with no extra parameters takes only `user_google_email`.
+
+### Accounts
+
+- `list_gmail_accounts` -- no parameters. Lists every signed-in account as `email | type, auth | tools`: `all tools` means the account is served by a delegated service account and can use the delegated-only tools below; `core tools` means OAuth only. Call this first when unsure which account can do what.
+
+### Trash & Threads
+
+| Tool | Extra parameters |
+|------|------------------|
+| `trash_gmail_message` / `untrash_gmail_message` | `message_id` (string, required) |
+| `trash_gmail_thread` / `untrash_gmail_thread` | `thread_id` (string, required) |
+| `list_gmail_threads` | `query` (string), `max_results` (int, default 20), `label_ids` (array), `include_spam_trash` (bool, default false), `page_token` (string) |
+| `modify_gmail_thread_labels` | `thread_id` (string, required), `add_label_ids` (array), `remove_label_ids` (array) |
+
+### Drafts
+
+| Tool | Extra parameters |
+|------|------------------|
+| `list_gmail_drafts` | `query` (string), `max_results` (int, default 20), `include_spam_trash` (bool, default false) |
+| `get_gmail_draft` / `delete_gmail_draft` / `send_gmail_draft` | `draft_id` (string, required) |
+| `update_gmail_draft` | `draft_id` (string, required), `subject`, `body`, `body_format` ("plain"/"html", default "plain"), `to`, `cc`, `bcc`, `thread_id` (all strings, optional) |
+
+### Lookups
+
+| Tool | Extra parameters |
+|------|------------------|
+| `get_gmail_label` | `label_id` (string, required) |
+| `get_gmail_filter` | `filter_id` (string, required) |
+| `get_gmail_profile` | none |
+
+### Push Notifications
+
+| Tool | Extra parameters |
+|------|------------------|
+| `watch_gmail_mailbox` | `topic_name` (string, required, a Pub/Sub topic), `label_ids` (array), `label_filter_behavior` ("include"/"exclude") |
+| `stop_gmail_mailbox_watch` | none |
+
+### Settings (read + write, any account)
+
+| Tool | Extra parameters |
+|------|------------------|
+| `get_gmail_vacation_settings` | none |
+| `update_gmail_vacation_settings` | `enable_auto_reply` (bool, required), `response_body_plain_text`, `response_body_html`, `response_subject` (strings), `restrict_to_contacts`, `restrict_to_domain` (bools), `start_time`, `end_time` (RFC3339 strings) |
+| `get_gmail_imap_settings` | none |
+| `update_gmail_imap_settings` | `enabled` (bool, required), `auto_expunge` (bool), `expunge_behavior` ("archive"/"trash"/"deleteForever"), `max_folder_size` (int) |
+| `get_gmail_pop_settings` | none |
+| `update_gmail_pop_settings` | `access_window` ("disabled"/"fromNowOn"/"allMail", required), `disposition` ("leaveInInbox"/"archive"/"trash"/"markRead", required) |
+| `get_gmail_language_settings` | none |
+| `update_gmail_language_settings` | `display_language` (string, required, e.g. "en-GB") |
+| `get_gmail_auto_forwarding` | none |
+| `list_gmail_forwarding_addresses` | none |
+| `get_gmail_forwarding_address` | `forwarding_email` (string, required) |
+| `list_gmail_send_as` | none |
+| `get_gmail_send_as` | `send_as_email` (string, required) |
+
+### Delegated-Only Writes (gmail.settings.sharing)
+
+These seven tools only work for accounts that `list_gmail_accounts` marks `all tools` (a Workspace account served by a delegated service account; `DWD_ALLOWED_DOMAINS` on the server decides which domains qualify). On any other account they refuse before calling Google -- report that to the user instead of retrying.
+
+| Tool | Extra parameters |
+|------|------------------|
+| `update_gmail_auto_forwarding` | `enabled` (bool, required), `email_address` (string, must be a verified forwarding address), `disposition` ("leaveInInbox"/"archive"/"trash"/"markRead") |
+| `create_gmail_forwarding_address` / `delete_gmail_forwarding_address` | `forwarding_email` (string, required) |
+| `create_gmail_send_as` | `send_as_email` (string, required), `display_name`, `reply_to_address`, `signature` (strings), `treat_as_alias` (bool) |
+| `update_gmail_send_as` | `send_as_email` (string, required), `display_name`, `reply_to_address`, `signature` (strings), `is_default`, `treat_as_alias` (bools) |
+| `delete_gmail_send_as` / `verify_gmail_send_as` | `send_as_email` (string, required) |
 
 ---
 
