@@ -4,6 +4,11 @@ __pycache__/
 *.so
 .mcp.json
 claude.md
+# ...but this fork's own CLAUDE.md is the rule file and belongs in the repo.
+# Git matches the line above case-insensitively on Windows and macOS, so it
+# swallowed CLAUDE.md silently. Private notes stay in CLAUDE.local.md, which
+# the *.local.md rule further down still ignores.
+!CLAUDE.md
 .beads/*
 .beads/issues.jsonl
 
