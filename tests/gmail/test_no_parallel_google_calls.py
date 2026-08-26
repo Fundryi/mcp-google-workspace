@@ -215,3 +215,49 @@ async def test_both_bulk_tools_word_the_change_block_the_same_way():
     for line in ("Added labels: Label_1", "Removed labels: (none)"):
         assert line in by_query, line
         assert line in by_filter, line
+
+
+@pytest.mark.asyncio
+async def test_label_verification_chunks_at_the_small_read_size_and_paces(
+    monkeypatch,
+):
+    """Upstream's read-back must chunk at 10 and breathe between chunks.
+
+    It arrived chunking at GMAIL_BATCH_SIZE (25) with no gap. The batch endpoint
+    runs every get in a chunk concurrently server-side, and the comment above
+    GMAIL_SEARCH_HEADER_BATCH_SIZE already records what 25 costs: Gmail answers
+    "Too many concurrent requests". Verification is on by default, so every bulk
+    label sweep would pay for it.
+    """
+    message_ids = [f"m{i}" for i in range(12)]
+    chunks = []
+    sleeps = []
+
+    def _new_batch(callback):
+        batch = Mock()
+        ids = []
+        batch.add.side_effect = lambda request, request_id=None: ids.append(request_id)
+
+        def _execute():
+            chunks.append(list(ids))
+            for mid in ids:
+                callback(mid, {"id": mid, "labelIds": ["INBOX", "STARRED"]}, None)
+
+        batch.execute.side_effect = _execute
+        return batch
+
+    service = Mock()
+    service.new_batch_http_request.side_effect = _new_batch
+
+    async def _record_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(gmail.asyncio, "sleep", _record_sleep)
+
+    statuses = await gmail._verify_batch_label_changes(
+        service, message_ids, ["STARRED"], None
+    )
+
+    assert [len(c) for c in chunks] == [10, 2]
+    assert sleeps == [gmail.GMAIL_REQUEST_DELAY]
+    assert set(statuses.values()) == {"applied"}
