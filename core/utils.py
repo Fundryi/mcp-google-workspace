@@ -510,6 +510,8 @@ def rate_limit_delay(error: HttpError, attempt: int) -> float:
         return float(header)
     except (TypeError, ValueError):
         return float(2 ** (attempt + 1))
+
+
 _URL_QUERY_RE = re.compile(r"\?.*?(?=\s+returned(?:\s|$)|[>\"']|$)")
 
 

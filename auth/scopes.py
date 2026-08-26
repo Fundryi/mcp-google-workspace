@@ -27,7 +27,9 @@ DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 # Fork: the Drive Activity API is a separate API (driveactivity v2) with its own
 # scope. Turn it on in the Cloud project as well, or every call returns 403.
-DRIVE_ACTIVITY_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.activity.readonly"
+DRIVE_ACTIVITY_READONLY_SCOPE = (
+    "https://www.googleapis.com/auth/drive.activity.readonly"
+)
 
 # Google Docs scopes
 DOCS_READONLY_SCOPE = "https://www.googleapis.com/auth/documents.readonly"
