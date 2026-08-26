@@ -5,7 +5,10 @@
       "label": "Upstream: check for updates",
       "detail": "Runs on folder open. Fetches upstream and opens UPSTREAM-UPDATE.md when there is something to merge.",
       "type": "shell",
+      // python3 on Windows is the Microsoft Store alias stub, which prints an
+      // install advert and exits 1. python is the real one there.
       "command": "python3",
+      "windows": { "command": "python" },
       "args": ["scripts/check_upstream.py"],
       "runOptions": { "runOn": "folderOpen" },
       "presentation": {
