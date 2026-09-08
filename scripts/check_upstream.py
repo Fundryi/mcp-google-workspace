@@ -40,8 +40,8 @@ Steps:
 3. uv sync --frozen --group test
 4. uv run --frozen ruff check . && uv run --frozen pytest
    (on Windows 4 upstream tests about POSIX file modes and HOME always fail)
-5. Check tests/gmail/test_gmail_extended_tools.py still pins 37 tools and
-   start the server with --tools gmail: 45 tools without a service account.
+5. Check tests/gmail/test_gmail_extended_tools.py still pins the extended
+   tool count and the server starts with --tools gmail.
 6. Read the upstream commits below. If one adds a Gmail feature we also
    ported, prefer upstream's version and delete ours.
 7. Commit and push.
@@ -96,7 +96,10 @@ def main() -> int:
         f"Upstream: {len(commits)} new commit(s). Hand-off written to UPSTREAM-UPDATE.md"
     )
     # Pop the hand-off into the editor so the update is hard to miss.
-    subprocess.run(["code", "-r", str(REPORT)], shell=True, check=False)
+    try:
+        subprocess.run(["code", "-r", str(REPORT)], check=False)
+    except FileNotFoundError:
+        pass  # no `code` CLI on PATH; the printed summary still lands
     print("Files we also edited:", ", ".join(overlap) or "none")
     for c in commits[:15]:
         print(" ", c)
