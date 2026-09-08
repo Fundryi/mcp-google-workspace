@@ -237,6 +237,7 @@ For parameters: [references/contacts.md](references/contacts.md)
 | Get messages | `get_messages` |
 | Search messages | `search_messages` |
 | Send message | `send_message` |
+| Edit a message already sent | `send_message` with `message_name` |
 | React to message | `create_reaction` |
 | Download attachment | `download_chat_attachment` |
 
@@ -283,7 +284,7 @@ Parameters: `user_google_email` (string, optional), `service_name` (string, requ
 ### Reply to an email
 1. `search_gmail_messages` -- find the email
 2. `get_gmail_message_content` -- read it (get `message_id` and `thread_id`)
-3. `send_gmail_message` -- reply using `in_reply_to` and `thread_id`
+3. `send_gmail_message` -- reply using `thread_id`; omit reply headers to target the latest non-draft, non-trash message with an RFC `Message-ID`
 
 ### Find and share a file
 1. `search_drive_files` -- find the file

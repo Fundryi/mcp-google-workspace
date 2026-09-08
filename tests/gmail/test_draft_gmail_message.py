@@ -32,16 +32,20 @@ def _unwrap(tool):
 
 
 def _thread_response(*message_ids):
-    return {
-        "messages": [
-            {
-                "payload": {
-                    "headers": [{"name": "Message-ID", "value": message_id}],
-                }
-            }
-            for message_id in message_ids
-        ]
-    }
+    messages = []
+    ancestors = []
+    for message_id in message_ids:
+        headers = [{"name": "Message-ID", "value": message_id}]
+        if ancestors:
+            headers.extend(
+                [
+                    {"name": "In-Reply-To", "value": ancestors[-1]},
+                    {"name": "References", "value": " ".join(ancestors)},
+                ]
+            )
+        messages.append({"payload": {"headers": headers}})
+        ancestors.append(message_id)
+    return {"messages": messages}
 
 
 def _encode_part(text: str) -> str:
@@ -54,6 +58,8 @@ def _thread_message(
     subject: str = "Meeting tomorrow",
     from_value: str = "sender@example.com",
     reply_to: str | None = None,
+    in_reply_to: str | None = None,
+    references: str | None = None,
     to_value: str = "user@example.com",
     cc_value: str | None = None,
     date: str = "Fri, 28 Mar 2026 10:00:00 -0400",
@@ -69,6 +75,10 @@ def _thread_message(
     ]
     if reply_to:
         headers.append({"name": "Reply-To", "value": reply_to})
+    if in_reply_to:
+        headers.append({"name": "In-Reply-To", "value": in_reply_to})
+    if references:
+        headers.append({"name": "References", "value": references})
     if cc_value:
         headers.append({"name": "Cc", "value": cc_value})
 
@@ -922,6 +932,143 @@ async def test_draft_gmail_message_autofills_reply_headers_from_thread():
 
 
 @pytest.mark.asyncio
+async def test_draft_gmail_message_skips_existing_draft_as_default_reply_parent():
+    mock_service = _mock_gmail_service()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    thread_messages = [
+        _thread_message("<latest-sent@example.com>"),
+        _thread_message("<existing-draft@example.com>"),
+    ]
+    thread_messages[-1]["labelIds"] = ["DRAFT"]
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": thread_messages
+    }
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        to="recipient@example.com",
+        subject="Meeting tomorrow",
+        body="Thanks for the update.",
+        thread_id="thread123",
+        include_signature=False,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    message_body = create_kwargs["body"]["message"]
+    parsed = _parse_raw_message(message_body["raw"])
+
+    assert parsed["In-Reply-To"] == "<latest-sent@example.com>"
+    assert parsed["References"] == "<latest-sent@example.com>"
+    assert message_body["threadId"] == "thread123"
+
+
+@pytest.mark.asyncio
+async def test_draft_gmail_message_skips_headerless_default_reply_parent():
+    mock_service = _mock_gmail_service()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    headerless_latest = _thread_message(
+        "<remove-me@example.com>",
+        from_value="Carol Example <carol@example.com>",
+    )
+    headerless_latest["payload"]["headers"] = [
+        header
+        for header in headerless_latest["payload"]["headers"]
+        if header["name"] != "Message-ID"
+    ]
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message(
+                "<latest-replyable@example.com>",
+                from_value="Alice Example <alice@example.com>",
+                reply_to="alice-replies@example.com",
+            ),
+            headerless_latest,
+        ]
+    }
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        subject="Meeting tomorrow",
+        body="Thanks for the update.",
+        thread_id="thread123",
+        include_signature=False,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+
+    assert parsed["To"] == "alice-replies@example.com"
+    assert parsed["In-Reply-To"] == "<latest-replyable@example.com>"
+    assert parsed["References"] == "<latest-replyable@example.com>"
+
+
+@pytest.mark.parametrize(
+    ("middle_labels", "latest_in_reply_to", "latest_references", "expected"),
+    [
+        (
+            [],
+            "<root@example.com>",
+            "<root@example.com>",
+            "<root@example.com> <latest@example.com>",
+        ),
+        (
+            ["TRASH"],
+            "<middle@example.com>",
+            "<root@example.com> <middle@example.com>",
+            "<root@example.com> <middle@example.com> <latest@example.com>",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_draft_gmail_message_uses_selected_parent_rfc_ancestry(
+    middle_labels, latest_in_reply_to, latest_references, expected
+):
+    mock_service = _mock_gmail_service()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    middle = _thread_message(
+        "<middle@example.com>",
+        in_reply_to="<root@example.com>",
+        references="<root@example.com>",
+    )
+    middle["labelIds"] = middle_labels
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message("<root@example.com>"),
+            middle,
+            _thread_message(
+                "<latest@example.com>",
+                in_reply_to=latest_in_reply_to,
+                references=latest_references,
+            ),
+        ]
+    }
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        to="recipient@example.com",
+        subject="Meeting tomorrow",
+        body="Thanks for the update.",
+        thread_id="thread123",
+        include_signature=False,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+
+    assert parsed["In-Reply-To"] == "<latest@example.com>"
+    assert parsed["References"] == expected
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_uses_explicit_in_reply_to_when_filling_references():
     mock_service = _mock_gmail_service()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
@@ -954,7 +1101,52 @@ async def test_draft_gmail_message_uses_explicit_in_reply_to_when_filling_refere
 
 
 @pytest.mark.asyncio
-async def test_draft_gmail_message_uses_explicit_references_when_filling_in_reply_to():
+async def test_draft_gmail_message_uses_explicit_trashed_reply_target_context():
+    mock_service = _mock_gmail_service()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    trashed_target = _thread_message(
+        "<trashed-target@example.com>",
+        from_value="Bob Example <bob@example.com>",
+        reply_to="bob-replies@example.com",
+        in_reply_to="<root@example.com>",
+        references="<root@example.com>",
+    )
+    trashed_target["labelIds"] = ["TRASH"]
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message("<root@example.com>"),
+            trashed_target,
+            _thread_message(
+                "<latest@example.com>",
+                from_value="Carol Example <carol@example.com>",
+                in_reply_to="<root@example.com>",
+                references="<root@example.com>",
+            ),
+        ]
+    }
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        subject="Meeting tomorrow",
+        body="Replying to the selected older message.",
+        thread_id="thread123",
+        in_reply_to="<trashed-target@example.com>",
+        include_signature=False,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+
+    assert parsed["To"] == "bob-replies@example.com"
+    assert parsed["In-Reply-To"] == "<trashed-target@example.com>"
+    assert parsed["References"] == ("<root@example.com> <trashed-target@example.com>")
+
+
+@pytest.mark.asyncio
+async def test_draft_gmail_message_defaults_to_latest_when_only_references_are_given():
     mock_service = _mock_gmail_service()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
     mock_service.users().threads().get().execute.return_value = _thread_response(
@@ -980,9 +1172,11 @@ async def test_draft_gmail_message_uses_explicit_references_when_filling_in_repl
     raw_message = create_kwargs["body"]["message"]["raw"]
     raw_text = base64.urlsafe_b64decode(raw_message).decode("utf-8", errors="ignore")
 
-    assert "In-Reply-To: <msg2@example.com>" in raw_text
-    assert "References: <msg1@example.com> <msg2@example.com>" in raw_text
-    assert "<msg3@example.com>" not in raw_text
+    assert "In-Reply-To: <msg3@example.com>" in raw_text
+    assert (
+        "References: <msg1@example.com> <msg2@example.com> <msg3@example.com>"
+        in raw_text
+    )
 
 
 @pytest.mark.asyncio

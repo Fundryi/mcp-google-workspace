@@ -33,14 +33,6 @@ def _unwrap(tool):
 # --- Gmail: labels ---------------------------------------------------------
 
 
-def test_label_palette_matches_gmail():
-    # 113 values, from the LabelColor schema in the Gmail discovery document.
-    assert len(gmail.GMAIL_LABEL_COLORS) == 113
-    assert "#757575" in gmail.GMAIL_LABEL_COLORS  # missing from the HTML docs page
-    assert "#fb4c2f" in gmail.GMAIL_LABEL_COLORS
-    assert "#123456" not in gmail.GMAIL_LABEL_COLORS
-
-
 @pytest.mark.asyncio
 async def test_label_update_rejects_a_color_gmail_would_refuse():
     with pytest.raises(Exception, match="palette"):
@@ -49,7 +41,8 @@ async def test_label_update_rejects_a_color_gmail_would_refuse():
             user_google_email="u@example.com",
             action="update",
             label_id="Label_1",
-            color={"backgroundColor": "#123456", "textColor": "#ffffff"},
+            background_color="#123456",
+            text_color="#ffffff",
         )
 
 

@@ -346,7 +346,8 @@ async def test_label_update_writes_what_was_passed():
         user_google_email="u@example.com",
         action="update",
         label_id="Label_1",
-        color={"backgroundColor": "#ffffff", "textColor": "#000000"},
+        background_color="#ffffff",
+        text_color="#000000",
         message_list_visibility="hide",
     )
     body = service.users().labels().update.call_args.kwargs["body"]

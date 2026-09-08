@@ -44,6 +44,167 @@ GMAIL_METADATA_HEADERS = [
     "List-Id",
 ]
 
+# Gmail accepts label colors only from a fixed palette, and rejects anything else
+# with an opaque 400. Both backgroundColor and textColor draw from this same set.
+# https://developers.google.com/gmail/api/reference/rest/v1/users.labels#Label
+# Synchronized with Gmail v1 discovery revision 20260824. When Gmail changes the
+# LabelColor schema, update this set and its exact fingerprint test together.
+GMAIL_LABEL_COLORS = frozenset(
+    {
+        "#000000",
+        "#007286",
+        "#04502e",
+        "#076239",
+        "#083018",
+        "#094228",
+        "#0b4f30",
+        "#0b804b",
+        "#0d3472",
+        "#0d3b44",
+        "#149e60",
+        "#16a765",
+        "#16a766",
+        "#1a764d",
+        "#1c4587",
+        "#1e53b8",
+        "#202124",
+        "#285bac",
+        "#2a9c68",
+        "#2da2bb",
+        "#3c78d8",
+        "#3d188e",
+        "#3dc789",
+        "#41236d",
+        "#42d692",
+        "#434343",
+        "#43d692",
+        "#44b984",
+        "#464646",
+        "#4986e7",
+        "#4a86e8",
+        "#521d28",
+        "#54240e",
+        "#594c05",
+        "#633e04",
+        "#653e9b",
+        "#662e37",
+        "#666666",
+        "#684e07",
+        "#68dfa9",
+        "#6d9eeb",
+        "#711a36",
+        "#757575",
+        "#7858c3",
+        "#7a2e0b",
+        "#7a4706",
+        "#822111",
+        "#83334c",
+        "#89d3b2",
+        "#8a1c0a",
+        "#8e63ce",
+        "#98d7e4",
+        "#994a64",
+        "#999999",
+        "#a0eac9",
+        "#a2dcc1",
+        "#a46a21",
+        "#a479e2",
+        "#a4c2f4",
+        "#aa8831",
+        "#ac2b16",
+        "#b3efd3",
+        "#b65775",
+        "#b694e8",
+        "#b6cff5",
+        "#b99aff",
+        "#b9e4d0",
+        "#c2185b",
+        "#c2c2c2",
+        "#c6f3de",
+        "#c9daf8",
+        "#cc3a21",
+        "#cca6ac",
+        "#cccccc",
+        "#cf8933",
+        "#d0bcf1",
+        "#d5ae49",
+        "#d93025",
+        "#e07798",
+        "#e3d7ff",
+        "#e4d7f5",
+        "#e66550",
+        "#e7e7e7",
+        "#eaa041",
+        "#ebdbde",
+        "#efa093",
+        "#efefef",
+        "#f2b2a8",
+        "#f2c960",
+        "#f3f3f3",
+        "#f691b2",
+        "#f691b3",
+        "#f6c5be",
+        "#f7a7c0",
+        "#fad165",
+        "#fb4c2f",
+        "#fbc8d9",
+        "#fbd3e0",
+        "#fbe983",
+        "#fcda83",
+        "#fcdee8",
+        "#fce8b3",
+        "#fdedc1",
+        "#fef1d1",
+        "#ff7537",
+        "#ffad46",
+        "#ffad47",
+        "#ffbc6b",
+        "#ffc8af",
+        "#ffd6a2",
+        "#ffdeb5",
+        "#ffe6c7",
+        "#ffffff",
+    }
+)
+
+
+def _validate_label_color(field: str, value: str) -> str:
+    """Normalize one label color and check it against Gmail's fixed palette.
+
+    Gmail answers an unsupported color with a bare 400, so the check happens here
+    to tell the caller which value was wrong and what is allowed.
+    """
+    normalized = value.strip().lower()
+    if normalized not in GMAIL_LABEL_COLORS:
+        raise ToolExecutionError(
+            f"{field} '{value}' is not a Gmail label color. Gmail accepts only its "
+            f"own palette of {len(GMAIL_LABEL_COLORS)} colors, listed at "
+            "https://developers.google.com/gmail/api/reference/rest/v1/users.labels#Label"
+        )
+    return normalized
+
+
+def build_label_color(
+    background_color: Optional[str] = None,
+    text_color: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
+    """Build the `color` object for a Gmail label, or None when no color is given.
+
+    Gmail requires both halves whenever `color` is set, so a half-specified color
+    is rejected here rather than sent and refused.
+    """
+    if background_color is None and text_color is None:
+        return None
+    if background_color is None or text_color is None:
+        raise ToolExecutionError(
+            "background_color and text_color must be set together. Gmail requires "
+            "both when a label color is set."
+        )
+    return {
+        "backgroundColor": _validate_label_color("background_color", background_color),
+        "textColor": _validate_label_color("text_color", text_color),
+    }
+
 
 def _normalize_email(address: str) -> str:
     """Lowercase an email address and strip plus-addressing so that
@@ -199,37 +360,49 @@ def _parse_date_header(
 
 
 def _parse_message_id_chain(header_value: Optional[str]) -> list[str]:
-    """Extract Message-IDs from a reply header value."""
+    """Extract RFC Message-IDs from a reply header value."""
     if not header_value:
         return []
 
     message_ids = re.findall(r"<[^>]+>", header_value)
-    if message_ids:
-        return message_ids
-
-    return header_value.split()
+    return message_ids or header_value.split()
 
 
 def _derive_reply_headers(
     thread_message_ids: list[str],
     in_reply_to: Optional[str],
     references: Optional[str],
+    target: Optional[Mapping[str, Any]] = None,
 ) -> tuple[Optional[str], Optional[str]]:
-    """Fill missing reply headers while preserving caller intent."""
+    """Fill reply headers, defaulting to the latest automatically eligible message.
+
+    Automatic targets are non-draft, non-trash messages with an RFC Message-ID.
+    """
     derived_in_reply_to = in_reply_to
     derived_references = references
 
-    if not thread_message_ids:
+    if not thread_message_ids and not target:
         return derived_in_reply_to, derived_references
 
+    target_message_id = target.get("message_id") if target else None
     if not derived_in_reply_to:
-        reference_chain = _parse_message_id_chain(derived_references)
-        derived_in_reply_to = (
-            reference_chain[-1] if reference_chain else thread_message_ids[-1]
-        )
+        # References describe ancestry; only In-Reply-To explicitly selects an
+        # older reply parent. Without one, rebuild both headers from the latest
+        # eligible message in the thread.
+        derived_in_reply_to = target_message_id or thread_message_ids[-1]
+        derived_references = None
 
     if not derived_references:
-        if derived_in_reply_to and derived_in_reply_to in thread_message_ids:
+        if target_message_id and derived_in_reply_to == target_message_id:
+            reference_chain = _parse_message_id_chain(target.get("references"))
+            if not reference_chain:
+                parent_ids = _parse_message_id_chain(target.get("in_reply_to"))
+                if len(parent_ids) == 1:
+                    reference_chain = parent_ids
+            if target_message_id not in reference_chain:
+                reference_chain.append(target_message_id)
+            derived_references = " ".join(reference_chain)
+        elif derived_in_reply_to and derived_in_reply_to in thread_message_ids:
             reply_index = thread_message_ids.index(derived_in_reply_to)
             derived_references = " ".join(thread_message_ids[: reply_index + 1])
         elif derived_in_reply_to:
