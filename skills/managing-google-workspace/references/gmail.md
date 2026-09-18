@@ -70,6 +70,8 @@ Download an attachment to local disk (stdio mode) or get a temporary URL (HTTP m
 
 ## Send & Draft
 
+Send, draft, and forward convert bare newlines in caller-supplied HTML to line breaks before adding signatures or quoted originals. Structured HTML and raw-text blocks retain their formatting; signature and quoted markup are preserved.
+
 ### send_gmail_message
 Send an email. Supports new messages, replies, HTML, attachments, CC/BCC, and Send As aliases.
 

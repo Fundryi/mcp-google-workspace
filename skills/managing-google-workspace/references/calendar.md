@@ -49,15 +49,16 @@ Create, update, or delete a calendar event.
 | user_google_email | string | yes | | |
 | action | string | yes | | `create`, `update`, or `delete` |
 | summary | string | for create | | Event title |
-| start_time | string | for create | | RFC 3339 format |
-| end_time | string | for create | | RFC 3339 format |
+| start_time | string | for create | | RFC 3339 offset preserves the exact instant; omit the offset and supply a zone for local wall time. Date-only creates an all-day event |
+| end_time | string | for create | | Same rules as start_time; all-day end dates are exclusive |
 | event_id | string | for update/delete | | Event ID |
 | confirm_recurring | boolean | no | false | Required as true to delete a repeating event, which removes every instance. To drop one instance, pass that instance's own event_id |
 | calendar_id | string | no | primary | |
 | description | string | no | | Event description |
 | location | string | no | | Event location |
 | attendees | array | no | | Email strings or attendee objects |
-| timezone | string | no | | e.g. `Australia/Melbourne` |
+| timezone | string | no | | IANA zone, e.g. `Australia/Melbourne`; converts offset-bearing times without changing their instant |
+| start_timezone / end_timezone | string | no | | Override timezone per boundary, such as departure and arrival zones for a flight |
 | attachments | array of strings | no | | Google Drive file URLs or IDs |
 | add_google_meet | boolean | no | | Add or remove Google Meet link |
 | reminders | array | no | | Custom reminder objects (see below) |
@@ -68,6 +69,8 @@ Create, update, or delete a calendar event.
 | guests_can_modify | boolean | no | | Attendees can edit the event |
 | guests_can_invite_others | boolean | no | | Attendees can invite others |
 | guests_can_see_other_guests | boolean | no | | Attendees can see other attendees |
+
+Create/update results report Google's saved start/end and elapsed duration (including DST changes). Check these before treating the schedule as confirmed.
 
 **Reminder format** (each item is a dict):
 - `{"method": "email", "minutes": 30}` -- email reminder 30 minutes before

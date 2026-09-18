@@ -61,6 +61,7 @@ For server options, transport, auth modes, tool filtering, and deployment: [refe
 
 ## Universal Patterns
 
+- Read-only mode hides Google write tools; sign-in and attachment downloads remain available for local credential and file writes.
 - Consolidated "manage" tools use an `action` parameter for create/update/delete.
 - Several accounts can be signed in at once (this fork); `user_google_email` picks the account on every call. `list_gmail_accounts` shows who is signed in and what each account can do.
 - A tool called without credentials returns the sign-in URL in its error instead of opening a browser (this fork). Give that URL to the user, wait for them to sign in, then retry the original call.
@@ -76,8 +77,8 @@ For server options, transport, auth modes, tool filtering, and deployment: [refe
 | Read multiple emails | `get_gmail_messages_content_batch` |
 | Read a thread | `get_gmail_thread_content` |
 | Read multiple threads | `get_gmail_threads_content_batch` |
-| Send email (new or reply) | `send_gmail_message` |
-| Create draft | `draft_gmail_message` |
+| Send email (new or reply; bare newlines in HTML become breaks) | `send_gmail_message` |
+| Create draft (preserves signature and quoted markup) | `draft_gmail_message` |
 | Download attachment | `get_gmail_attachment_content` |
 | Add/remove labels (one) | `modify_gmail_message_labels` |
 | Add/remove labels (batch) | `batch_modify_gmail_message_labels` |
@@ -127,7 +128,7 @@ For parameters: [references/drive.md](references/drive.md)
 |------|------|
 | List calendars | `list_calendars` |
 | Get events | `get_events` |
-| Create/update/delete event | `manage_event` |
+| Create/update/delete event (explicit offsets preserve instants; check saved times) | `manage_event` |
 | Check availability | `query_freebusy` |
 
 For parameters: [references/calendar.md](references/calendar.md)
@@ -138,6 +139,7 @@ For parameters: [references/calendar.md](references/calendar.md)
 |------|------|
 | Read doc as Markdown | `get_doc_as_markdown` |
 | Read doc content (raw) | `get_doc_content` |
+| Read plain text with link/chip targets and document segments | `get_doc_content(preserve_context=True)` |
 | Create new doc | `create_doc` |
 | Modify text / apply styles | `modify_doc_text` |
 | Insert elements (tables, lists, breaks) | `insert_doc_elements` |
@@ -258,7 +260,7 @@ For parameters: [references/chat.md](references/chat.md)
 | Manage deployments | `manage_deployment` / `list_deployments` |
 | Versions | `create_version` / `get_version` / `list_versions` |
 | Execution metrics | `get_script_metrics` |
-| Process history | `list_script_processes` |
+| Process history (script_id includes visible runs by other users) | `list_script_processes` |
 
 For parameters: [references/apps-script.md](references/apps-script.md)
 

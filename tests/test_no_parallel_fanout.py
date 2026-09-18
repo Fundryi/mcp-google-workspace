@@ -32,14 +32,21 @@ SERVICE_MODULES = (
     "gappsscript",
 )
 
-# Upstream fan-outs that predate the rule. Both carry the hazard. Neither was
-# written by this fork, and fixing them means touching code we did not break,
-# so they are named here rather than silently tolerated. Remove an entry only
-# by fixing the call, never to make this test pass.
+# Upstream gather sites serialize Google requests with a semaphore of one.
+# Keep the upstream structure, and pin those limits below.
 KNOWN_UPSTREAM_FANOUTS = {
     ("gdrive/drive_tools.py", "_bounded_fetch_organizers"),
     ("gchat/chat_tools.py", "fetch_space_messages"),
 }
+
+
+def test_allowlisted_gather_sites_serialize_google_requests():
+    from gdrive.drive_tools import SHARED_DRIVE_ORGANIZER_CONCURRENCY_LIMIT
+    from gchat.chat_tools import _SEARCH_MESSAGES_MAX_CONCURRENT_SPACE_FETCHES
+
+    assert SHARED_DRIVE_ORGANIZER_CONCURRENCY_LIMIT == 1
+    assert _SEARCH_MESSAGES_MAX_CONCURRENT_SPACE_FETCHES == 1
+
 
 GATHER = re.compile(r"asyncio\.gather\s*\(")
 

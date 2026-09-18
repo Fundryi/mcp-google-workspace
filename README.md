@@ -168,12 +168,13 @@ Each page lists every tool with its tier, parameters, required scopes, and examp
 
 This is a private fork of [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp). It adds the Gmail management tools that upstream does not ship. Everything else is upstream, apart from a few small callability edits: a server instructions block (writes are live unless `--read-only`; params are snake_case, `file_url` is accepted for `create_drive_file`'s `fileUrl`), `Args:` sections on the docs and comment tools so every parameter carries a description, and a final `Capped at N` line on list tools that stopped at their cap (search_docs, list_docs_in_folder, comments, revisions, activity, Gmail history).
 
-Added tools live in `gmail/gmail_extended_tools.py` (37 tools):
+Added tools live in `gmail/gmail_extended_tools.py` (41 tools):
 
 - Trash: `trash_gmail_message`, `untrash_gmail_message`, `trash_gmail_thread`, `untrash_gmail_thread`. There is no permanent delete and the `https://mail.google.com/` scope is never requested. That is a deliberate choice.
 - Drafts: `list_gmail_drafts`, `get_gmail_draft`, `update_gmail_draft`, `delete_gmail_draft`, `send_gmail_draft`. An explicit subject passed to `update_gmail_draft` is always kept as given, even inside a thread.
 - Threads and labels: `list_gmail_threads`, `modify_gmail_thread_labels`, `get_gmail_label`, `get_gmail_filter`.
 - Mailbox: `get_gmail_profile`, `list_gmail_accounts`, `watch_gmail_mailbox`, `stop_gmail_mailbox_watch`.
+- Catch-up and bulk actions: `list_gmail_history`, `summarize_gmail_messages`, `modify_gmail_messages_by_query`, `apply_gmail_filter_to_existing_mail`.
 - Settings: vacation responder, IMAP, POP, display language, auto-forwarding (get and update for each).
 - Forwarding addresses (list, get, create, delete) and send-as aliases (list, get, create, update, delete, verify).
 
@@ -183,7 +184,7 @@ Writes to auto-forwarding, forwarding addresses, and send-as aliases (7 tools) n
 
 - `list_gmail_accounts` reports every account with its type and what it can do, for example `me@gmail.com | private, oauth | core tools` and `<any mailbox>@firma.example | workspace, delegated | all tools`. Agents should call it first.
 - The 7 tools check the account before any Google call. On an account that is not delegated they return a message that points to `list_gmail_accounts` instead of a 403 from Google.
-- When no service account is configured at all, the 7 tools are removed at startup. With `--tools gmail` you then see 45 tools instead of 52.
+- When no service account is configured at all, the 7 tools are removed at startup. With `--tools gmail` you then see 50 tools instead of 57.
 - One server can hold OAuth credentials for private accounts and a delegated service account for Workspace domains at the same time. Set `GOOGLE_SERVICE_ACCOUNT_KEY_FILE`, `USER_GOOGLE_EMAIL`, and `DWD_ALLOWED_DOMAINS=firma.example`. Addresses in those domains use the service account. Any other address that has gone through `start_google_auth` uses its own OAuth credentials. Addresses with neither are rejected, as in upstream. Without `DWD_ALLOWED_DOMAINS` the service account serves every address, which is upstream's behaviour.
 
 ### Email allowlist
@@ -217,6 +218,21 @@ VS Code does the first step for you. Open `mcp-google-workspace.code-workspace` 
 - Sign-in works without a browser on the server. `start_google_auth` prints a URL. Open it on any machine and accept. The browser then lands on a `localhost` page that does not load. Copy that address and pass it to `complete_google_auth` (in the chat, or through `scripts/auth.py`, which asks for one paste per account). The server picks this mode by itself when it finds no browser: `SSH_CONNECTION` set, Linux without `DISPLAY`, or `WORKSPACE_MCP_NO_BROWSER=1`. On a desktop the tab still opens as before. A pasted link works once and for 10 minutes; the allowlist applies to it like to any other sign-in. `WORKSPACE_MCP_PORT` now beats a stray `PORT` variable for the callback port.
 
 After a merge, start the server with `--tools gmail` and check that the tool list still has 57 entries with a service account configured, or 50 without one (14 upstream Gmail tools, `start_google_auth`, `complete_google_auth`, and 41 or 34 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.
+
+Upstream v1.27.0 behavior retained by this fork:
+
+| Tool | Behavior |
+|------|----------|
+| `get_doc_content` | `preserve_context=True` includes links, chips, and document segments. Keep the default for editing indices. |
+| `get_doc_as_markdown` | Preserves special characters in link destinations and code delimiters. |
+| `manage_event` | Preserves explicit timestamp instants, validates timestamps and IANA zones, and reports saved times and elapsed duration. |
+| `send_gmail_message`, `draft_gmail_message`, `forward_gmail_message` | Converts bare newlines in caller HTML before composing signatures or quoted content. |
+| `list_drive_items(resource_type="shared_drives", include_organizers=True)` | Fetches organizers one request at a time on the shared Google connection. |
+| `list_script_processes` | With `script_id`, lists visible runs of that script, including other users' runs. |
+
+Credential-free startup and read-only discovery smoke: `uv run --frozen pytest tests/test_stdio_tool_listing.py -s`. It starts the server, sends MCP `initialize` and `tools/list`, then checks a clean exit; it never calls a Google tool.
+
+Read-only mode hides tools requiring Google write scopes. Sign-in and attachment downloads remain available because their writes affect local credentials or files, not Google account data.
 
 ## Quick Start
 

@@ -161,7 +161,7 @@ Lists recent execution processes for the user's scripts.
 |-----------|------|----------|---------|-------|
 | user_google_email | string | yes | | |
 | page_size | integer | no | 50 | |
-| script_id | any | no | | Filter by script ID |
+| script_id | any | no | | Uses the script-scoped endpoint: includes all visible runs of this script, including other users' runs. Omit for the current user's processes |
 
 ### get_script_metrics
 Gets execution metrics (active users, total executions, failures) for a script project.

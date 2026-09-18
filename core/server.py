@@ -354,9 +354,11 @@ When using Google Workspace tools, always use `{USER_GOOGLE_EMAIL}` as the `user
     logger.info(f"Server instructions configured for user: {USER_GOOGLE_EMAIL}")
 
 # Sardine fork: callability notes that hold in every mode (see CLAUDE.md).
-_SARDINE_NOTES = """Writes are live: every tool with readOnlyHint=false changes data in the connected account as soon as it is called. Only when the server was started with --read-only (or WORKSPACE_MCP_READ_ONLY=true) are the write tools absent from tools/list.
+_SARDINE_NOTES = """Google write tools change data in the connected account as soon as they are called. With --read-only (or WORKSPACE_MCP_READ_ONLY=true), tools requiring Google write scopes are absent from tools/list. Sign-in and attachment downloads remain available; their readOnlyHint=false reflects local credential or file writes.
 Parameter names are snake_case; the one exception is create_drive_file's `fileUrl` (`file_url` is accepted as an alias).
-List tools stop at their page_size / max_* cap; when more results exist the last line of the result says "Capped at N". Raise the cap or use the tool's page token to continue."""
+List tools stop at their page_size / max_* cap; when more results exist the last line of the result says "Capped at N". Raise the cap or use the tool's page token to continue.
+get_doc_content(preserve_context=True) includes links, chips, and document segments; use the default output for editing indices. Calendar timestamp offsets preserve the exact instant; for local wall time omit the offset and supply an IANA timezone, then check the saved times in the result.
+Gmail send, draft, and forward tools render bare newlines in caller-supplied HTML as line breaks before adding signatures or quoted content. list_script_processes(script_id=...) includes visible runs by other users of that script."""
 _server_instructions = (
     f"{_server_instructions}\n\n{_SARDINE_NOTES}"
     if _server_instructions
