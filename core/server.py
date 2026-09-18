@@ -353,6 +353,16 @@ if USER_GOOGLE_EMAIL and not is_trust_gateway_identity():
 When using Google Workspace tools, always use `{USER_GOOGLE_EMAIL}` as the `user_google_email` parameter. Do not ask the user for their email address."""
     logger.info(f"Server instructions configured for user: {USER_GOOGLE_EMAIL}")
 
+# Sardine fork: callability notes that hold in every mode (see CLAUDE.md).
+_SARDINE_NOTES = """Writes are live: every tool with readOnlyHint=false changes data in the connected account as soon as it is called. Only when the server was started with --read-only (or WORKSPACE_MCP_READ_ONLY=true) are the write tools absent from tools/list.
+Parameter names are snake_case; the one exception is create_drive_file's `fileUrl` (`file_url` is accepted as an alias).
+List tools stop at their page_size / max_* cap; when more results exist the last line of the result says "Capped at N". Raise the cap or use the tool's page token to continue."""
+_server_instructions = (
+    f"{_server_instructions}\n\n{_SARDINE_NOTES}"
+    if _server_instructions
+    else _SARDINE_NOTES
+)
+
 # Branding for the OAuth consent page: FastMCP's OAuth proxy renders the server's
 # name / icon / website on the consent screen (auth/oauth_config reads the env vars).
 _brand_config = get_oauth_config()

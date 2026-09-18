@@ -93,7 +93,14 @@ def create_comment_tools(app_name: str, file_id_param: str):
             document_id: str,
             max_comments: int | None = None,
         ) -> str:
-            """List all comments from a Google Document (optional max_comments to limit results)."""
+            """List all comments from a Google Document (optional max_comments to limit results).
+
+            Args:
+                user_google_email: The user's Google email address. Required.
+                document_id: ID of the document (from search_drive_files or its list tool).
+                max_comments: Cap on comments returned. Defaults to
+                    WORKSPACE_MCP_COMMENTS_MAX or 100; the last line says so when more exist.
+            """
             return await _read_comments_impl(
                 service, app_name, document_id, max_comments=max_comments
             )
@@ -110,6 +117,13 @@ def create_comment_tools(app_name: str, file_id_param: str):
             comment_id: Optional[str] = None,
         ) -> str:
             """Manage comments on a Google Document.
+
+            Args:
+                user_google_email: The user's Google email address. Required.
+                document_id: ID of the document.
+                action: One of create, reply, resolve.
+                comment_content: Comment text. Required for create and reply.
+                comment_id: ID from list_document_comments. Required for reply and resolve.
 
             Actions:
               - create: Create a new document-level comment. Requires comment_content.
@@ -132,7 +146,14 @@ def create_comment_tools(app_name: str, file_id_param: str):
             spreadsheet_id: str,
             max_comments: int | None = None,
         ) -> str:
-            """List all comments from a Google Spreadsheet (optional max_comments to limit results)."""
+            """List all comments from a Google Spreadsheet (optional max_comments to limit results).
+
+            Args:
+                user_google_email: The user's Google email address. Required.
+                spreadsheet_id: ID of the spreadsheet (from search_drive_files or its list tool).
+                max_comments: Cap on comments returned. Defaults to
+                    WORKSPACE_MCP_COMMENTS_MAX or 100; the last line says so when more exist.
+            """
             return await _read_comments_impl(
                 service, app_name, spreadsheet_id, max_comments=max_comments
             )
@@ -149,6 +170,13 @@ def create_comment_tools(app_name: str, file_id_param: str):
             comment_id: Optional[str] = None,
         ) -> str:
             """Manage comments on a Google Spreadsheet.
+
+            Args:
+                user_google_email: The user's Google email address. Required.
+                spreadsheet_id: ID of the spreadsheet.
+                action: One of create, reply, resolve.
+                comment_content: Comment text. Required for create and reply.
+                comment_id: ID from list_spreadsheet_comments. Required for reply and resolve.
 
             Actions:
               - create: Create a new comment. Requires comment_content.
@@ -171,7 +199,14 @@ def create_comment_tools(app_name: str, file_id_param: str):
             presentation_id: str,
             max_comments: int | None = None,
         ) -> str:
-            """List all comments from a Google Presentation (optional max_comments to limit results)."""
+            """List all comments from a Google Presentation (optional max_comments to limit results).
+
+            Args:
+                user_google_email: The user's Google email address. Required.
+                presentation_id: ID of the presentation (from search_drive_files or its list tool).
+                max_comments: Cap on comments returned. Defaults to
+                    WORKSPACE_MCP_COMMENTS_MAX or 100; the last line says so when more exist.
+            """
             return await _read_comments_impl(
                 service, app_name, presentation_id, max_comments=max_comments
             )
@@ -188,6 +223,13 @@ def create_comment_tools(app_name: str, file_id_param: str):
             comment_id: Optional[str] = None,
         ) -> str:
             """Manage comments on a Google Presentation.
+
+            Args:
+                user_google_email: The user's Google email address. Required.
+                presentation_id: ID of the presentation.
+                action: One of create, reply, resolve.
+                comment_content: Comment text. Required for create and reply.
+                comment_id: ID from list_presentation_comments. Required for reply and resolve.
 
             Actions:
               - create: Create a new comment. Requires comment_content.
@@ -306,6 +348,10 @@ async def _read_comments_impl(
 
         output.append("")  # Empty line between comments
 
+    if page_token:
+        output.append(
+            f"Capped at {max_comments} comments; more exist. Raise max_comments."
+        )
     return "\n".join(output)
 
 

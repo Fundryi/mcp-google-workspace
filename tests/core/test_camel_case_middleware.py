@@ -123,6 +123,23 @@ async def test_declared_camel_case_parameter_is_untouched():
 
 
 @pytest.mark.asyncio
+async def test_snake_case_alias_for_declared_camel_case_parameter():
+    """create_drive_file declares fileUrl; callers may spell it file_url."""
+    server = FastMCP("camel-case-alias")
+    server.add_middleware(CamelCaseArgumentsMiddleware())
+
+    @server.tool
+    def echo(fileUrl: str = "") -> str:  # noqa: N803 - intentional camelCase
+        return fileUrl
+
+    async with Client(server) as client:
+        result = await client.call_tool("echo", {"file_url": "aliased"})
+        assert result.content[0].text == "aliased"
+        with pytest.raises(Exception):
+            await client.call_tool("echo", {"file_url": "a", "fileUrl": "b"})
+
+
+@pytest.mark.asyncio
 async def test_unknown_tool_error_still_propagates():
     server = _build_server()
     async with Client(server) as client:

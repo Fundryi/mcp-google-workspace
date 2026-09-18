@@ -1652,6 +1652,13 @@ async def list_gmail_history(
         f"Changes since history ID {start_history_id}: {len(records)}",
         f"Next start_history_id: {latest_history_id}",
     ]
+    if page_token:
+        # The mailbox historyId would skip the records we did not read; resume
+        # from the last record we did.
+        lines[1] = (
+            f"Next start_history_id: {records[-1].get('id', latest_history_id)} "
+            f"(capped at {max_changes}; more changes exist, call again from this ID)"
+        )
     if not records:
         return "\n".join(lines + ["", "Nothing changed."])
 

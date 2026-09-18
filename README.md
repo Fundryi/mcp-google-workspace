@@ -166,7 +166,7 @@ Each page lists every tool with its tier, parameters, required scopes, and examp
 
 ## About this fork
 
-This is a private fork of [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp). It adds the Gmail management tools that upstream does not ship. Everything else is upstream, unchanged.
+This is a private fork of [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp). It adds the Gmail management tools that upstream does not ship. Everything else is upstream, apart from a few small callability edits: a server instructions block (writes are live unless `--read-only`; params are snake_case, `file_url` is accepted for `create_drive_file`'s `fileUrl`), `Args:` sections on the docs and comment tools so every parameter carries a description, and a final `Capped at N` line on list tools that stopped at their cap (search_docs, list_docs_in_folder, comments, revisions, activity, Gmail history).
 
 Added tools live in `gmail/gmail_extended_tools.py` (37 tools):
 

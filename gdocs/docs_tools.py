@@ -145,6 +145,12 @@ async def search_docs(
     """
     Searches for Google Docs by name using Drive API (mimeType filter).
 
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        query (str): Substring of the document name (Drive 'name contains').
+        page_size (int): Maximum documents returned. Defaults to 10. The last
+            line of the result says so when more exist.
+
     Returns:
         str: A formatted list of Google Docs matching the search query.
     """
@@ -158,7 +164,7 @@ async def search_docs(
         .list(
             q=f"name contains '{escaped_query}' and mimeType='application/vnd.google-apps.document' and trashed=false",
             pageSize=page_size,
-            fields="files(id, name, createdTime, modifiedTime, webViewLink)",
+            fields="nextPageToken, files(id, name, createdTime, modifiedTime, webViewLink)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
         )
@@ -173,6 +179,8 @@ async def search_docs(
         output.append(
             f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
         )
+    if response.get("nextPageToken"):
+        output.append(f"Capped at {page_size}; more matches exist. Raise page_size.")
     return "\n".join(output)
 
 
@@ -388,6 +396,12 @@ async def list_docs_in_folder(
     """
     Lists Google Docs within a specific Drive folder.
 
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        folder_id (str): Drive folder ID (from search_drive_files). Defaults to 'root'.
+        page_size (int): Maximum documents returned. Defaults to 100. The last
+            line of the result says so when more exist.
+
     Returns:
         str: A formatted list of Google Docs in the specified folder.
     """
@@ -400,7 +414,7 @@ async def list_docs_in_folder(
         .list(
             q=f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false",
             pageSize=page_size,
-            fields="files(id, name, modifiedTime, webViewLink)",
+            fields="nextPageToken, files(id, name, modifiedTime, webViewLink)",
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
         )
@@ -414,6 +428,8 @@ async def list_docs_in_folder(
         out.append(
             f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
         )
+    if rsp.get("nextPageToken"):
+        out.append(f"Capped at {page_size}; more Docs exist. Raise page_size.")
     return "\n".join(out)
 
 

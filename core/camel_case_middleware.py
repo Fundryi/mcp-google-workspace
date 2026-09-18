@@ -75,6 +75,18 @@ class CamelCaseArgumentsMiddleware(Middleware):
             ):
                 renames[key] = snake_key
 
+        # The reverse too: a snake_case spelling of a declared camelCase
+        # parameter (create_drive_file's fileUrl accepts file_url).
+        declared_by_snake = {
+            to_snake_case(name): name
+            for name in properties
+            if to_snake_case(name) != name
+        }
+        for key in arguments:
+            camel_key = declared_by_snake.get(key)
+            if key not in properties and camel_key and camel_key not in arguments:
+                renames[key] = camel_key
+
         # If two distinct keys normalize to the same parameter (e.g. "iCalUid"
         # and "iCalUID"), the request is ambiguous — leave those keys untouched
         # so schema validation rejects them instead of silently picking one.

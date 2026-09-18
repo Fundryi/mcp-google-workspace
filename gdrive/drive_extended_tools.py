@@ -376,6 +376,10 @@ async def list_drive_file_revisions(
             if part
         ]
         lines.append(f"  • revision {revision['id']}: {' | '.join(details)}")
+    if page_token or len(revisions) > max_revisions:
+        lines.append(
+            f"Capped at {max_revisions}; more versions exist. Raise max_revisions."
+        )
     return "\n".join(lines)
 
 
@@ -496,6 +500,10 @@ async def query_drive_activity(
         lines.append(f"  • {actors or 'someone'} {what}: {targets}")
         if when:
             lines.append(f"    {when}")
+    if page_token or len(activities) > max_activities:
+        lines.append(
+            f"Capped at {max_activities}; more activity exists. Raise max_activities."
+        )
     return "\n".join(lines)
 
 
