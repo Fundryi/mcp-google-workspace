@@ -1,7 +1,7 @@
-# CLAUDE.md
+# AGENTS.md
 
 Rules for working in this repo. Private notes with local paths live in
-CLAUDE.local.md, which is gitignored.
+Codex.local.md, which is gitignored.
 
 ## The one that already bit us
 
