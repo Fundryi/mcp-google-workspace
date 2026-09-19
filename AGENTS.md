@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Rules for working in this repo. Private notes with local paths live in
-Codex.local.md, which is gitignored.
+CLAUDE.local.md, which is gitignored.
 
 ## The one that already bit us
 
@@ -117,7 +117,7 @@ upstream module, so upstream stays mergeable.
 
 ## Shared knowledge base
 
-If the shared KB is configured and `../../knowledge-base/CLAUDE.md` exists, search it before domain answers or code changes and follow its operating rules.
+If the shared KB is configured and `../../knowledge-base/AGENTS.md` exists, search it before domain answers or code changes and follow its operating rules.
 
 - Tool ownership: `../../knowledge-base/wiki/_global/Claude and Codex MCP Tool Ownership.md`
 - Freshness: when a registered source path changes, follow `../../knowledge-base/wiki/meta/knowledge-freshness.md`.
