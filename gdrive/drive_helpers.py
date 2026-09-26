@@ -1166,7 +1166,9 @@ async def _resolve_import_media(
             if netloc and netloc.lower() != "localhost":
                 raw_path = f"//{netloc}{raw_path}"
             actual_path = url2pathname(raw_path)
-        elif parsed_url.scheme == "":
+        elif len(parsed_url.scheme) <= 1:
+            # No scheme, or a Windows drive letter: urlparse reads "C:\x" as
+            # scheme "c". Either way this is a plain local path.
             actual_path = file_path
         else:
             raise ValueError(

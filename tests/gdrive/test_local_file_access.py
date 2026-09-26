@@ -160,7 +160,7 @@ class TestHideLocalFileArgs:
             path
             for path in Path(REPO_ROOT).rglob("*.py")
             if not any(part.startswith(".") or part == "tests" for part in path.parts)
-            and re.search(r"\bexclude_args\s*=", path.read_text())
+            and re.search(r"\bexclude_args\s*=", path.read_text(encoding="utf-8"))
         ]
         assert offenders == []
 
