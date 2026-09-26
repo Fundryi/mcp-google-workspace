@@ -88,8 +88,10 @@ and HTTP. That takes FastMCP 4, built on MCP SDK 2. The mcp 1.x line stops at
 2025-11-25, its newest release included.
 
 - Keep `fastmcp>=4` in pyproject.toml. Upstream still pins 3.x, so a merge
-  conflict there resolves to ours. Re-lock with `uvx uv@0.5.31 lock`: it keeps
-  uv.lock at revision 1, as upstream has it. A current uv rewrites every line.
+  conflict there resolves to ours. Re-lock with `uvx uv@0.5.31 lock`, which
+  writes the lock format upstream uses. A current uv rewrites every line. The
+  header must keep `revision = 1` on line 2: 0.5.31 keeps that line but does
+  not add it back once it is gone.
 - Failures come back as a tool result with `isError: true` and a text body:
   bad input, Google errors, refusals. An unknown tool name is the one protocol
   error, -32602, raised by `core/unknown_tool_middleware.py` (FastMCP 4 alone
