@@ -65,6 +65,7 @@ For server options, transport, auth modes, tool filtering, and deployment: [refe
 - Consolidated "manage" tools use an `action` parameter for create/update/delete.
 - Several accounts can be signed in at once (this fork); `user_google_email` picks the account on every call. `list_gmail_accounts` shows who is signed in and what each account can do.
 - A tool called without credentials returns the sign-in URL in its error instead of opening a browser (this fork). Give that URL to the user, wait for them to sign in, then retry the original call.
+- A failed call returns a normal result with `isError: true` and a text body such as `API error in <tool>: ...` or a list of invalid arguments; read it, fix the call, retry. An unknown tool name is a JSON-RPC `-32602` error: the tool is not loaded under the current `--tools` or tier (this fork).
 
 ## Tool Reference
 

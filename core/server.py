@@ -374,6 +374,7 @@ When using Google Workspace tools, always use `{USER_GOOGLE_EMAIL}` as the `user
 
 # Sardine fork: callability notes that hold in every mode (see CLAUDE.md).
 _SARDINE_NOTES = """Google write tools change data in the connected account as soon as they are called. With --read-only (or WORKSPACE_MCP_READ_ONLY=true), tools requiring Google write scopes are absent from tools/list. Sign-in and attachment downloads remain available; their readOnlyHint=false reflects local credential or file writes.
+A failed call returns a normal result with isError and a readable text body; fix the arguments or account and retry. An unknown tool name is a -32602 protocol error, which means the tool is not loaded in this server.
 Parameter names are snake_case; the one exception is create_drive_file's `fileUrl` (`file_url` is accepted as an alias).
 List tools stop at their page_size / max_* cap; when more results exist the last line of the result says "Capped at N". Raise the cap or use the tool's page token to continue.
 get_doc_content(preserve_context=True) includes links, chips, and document segments; use the default output for editing indices. Calendar timestamp offsets preserve the exact instant; for local wall time omit the offset and supply an IANA timezone, then check the saved times in the result.

@@ -80,6 +80,40 @@ No `delete_message`, no `batch_delete`, no `delete_thread`, and never request
 the `https://mail.google.com/` scope. Trash and untrash cover the need and can
 be undone. A test guards this.
 
+## MCP protocol and SDK
+
+One command serves MCP 2026-07-28 (stateless, `server/discover`, no
+`initialize`) and the handshake revisions 2024-11-05 to 2025-11-25, on stdio
+and HTTP. That takes FastMCP 4, built on MCP SDK 2. The mcp 1.x line stops at
+2025-11-25, its newest release included.
+
+- Keep `fastmcp>=4` in pyproject.toml. Upstream still pins 3.x, so a merge
+  conflict there resolves to ours. Re-lock with `uvx uv@0.5.31 lock`: it keeps
+  uv.lock at revision 1, as upstream has it. A current uv rewrites every line.
+- Failures come back as a tool result with `isError: true` and a text body:
+  bad input, Google errors, refusals. An unknown tool name is the one protocol
+  error, -32602, raised by `core/unknown_tool_middleware.py` (FastMCP 4 alone
+  would return `isError`).
+- The caller reads error text. Build it from `safe_error` in
+  `handle_http_errors`, which shows URL queries as `?<query-redacted>`: a query
+  can carry an API key (`search_custom` sends `key=`).
+- `readOnlyHint` states what the tool itself does. `--read-only` gates by
+  scope and never reads the hint, so the hint has no safety net. A tool that
+  writes local files or credentials says `false`.
+- On 2026-07-28 each request is its own connection: `Middleware.on_initialize`
+  never runs and `ctx.session_id` is new per HTTP request. Key state by
+  `user_google_email` or token. Ask the caller for input through tool
+  arguments; `ctx.elicit`, sampling and roots have no back-channel there.
+- Read SDK fields in snake_case (`read_only_hint`, `is_error`,
+  `input_schema`). The camelCase reads go through a FastMCP bridge that warns
+  and is due for removal. camelCase keywords on construction stay valid.
+- Verify a protocol change with a real client over stdio: FastMCP 4
+  `Client(mode="legacy")`, `mode="2026-07-28"`, `mode="auto"`, and an old
+  `mcp==1.28.1` client. Expect 50 tools for `--tools gmail` without a service
+  account, `isError` for a missing argument, -32602 for an unknown tool, and
+  every stdout line valid JSON. The pinned mode skips `server/discover`, so it
+  shows no server instructions; legacy and auto do.
+
 ## No GitHub workflows
 
 This fork runs no CI. `.github/workflows/` was emptied on purpose: upstream's
@@ -108,8 +142,11 @@ Before pushing, run both at the pinned version:
 A hand-resolved merge conflict is the usual way this breaks: deleting the
 `<<<<<<<` markers also eats the blank lines the formatter wants.
 
-On Windows, 4 upstream tests always fail (POSIX file modes and a HOME path).
-They pass on Linux. Everything else must be green.
+On Windows, 7 upstream tests always fail: POSIX file modes and HOME paths in
+`test_credential_security.py`, `test_attachment_storage.py`,
+`test_startup_ui.py` and `test_oauth_config_client_secret_file.py`, and both
+cases of `test_stdio_tool_listing.py`, whose child process gets no home
+directory. They pass on Linux. Everything else must be green.
 
 Match upstream's conventions in files we add. New tools go in
 `*_extended_tools.py` modules with one import line at the bottom of the

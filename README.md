@@ -217,6 +217,20 @@ VS Code does the first step for you. Open `mcp-google-workspace.code-workspace` 
 - Credential files are written to a temp file and renamed, so a crash mid-write cannot truncate a token file.
 - Sign-in works without a browser on the server. `start_google_auth` prints a URL. Open it on any machine and accept. The browser then lands on a `localhost` page that does not load. Copy that address and pass it to `complete_google_auth` (in the chat, or through `scripts/auth.py`, which asks for one paste per account). The server picks this mode by itself when it finds no browser: `SSH_CONNECTION` set, Linux without `DISPLAY`, or `WORKSPACE_MCP_NO_BROWSER=1`. On a desktop the tab still opens as before. A pasted link works once and for 10 minutes; the allowlist applies to it like to any other sign-in. `WORKSPACE_MCP_PORT` now beats a stray `PORT` variable for the callback port.
 
+### MCP protocol
+
+This fork runs on FastMCP 4 and MCP SDK 2. Upstream still pins FastMCP 3, which stops at protocol 2025-11-25. The same command, stdio or HTTP, answers both kinds of client:
+
+- 2026-07-28: stateless. The client calls `server/discover`, then sends the version with every request. There is no `initialize` step.
+- 2024-11-05 to 2025-11-25: the old `initialize` handshake. MCP Router and other older hosts use this.
+
+For an agent calling the tools:
+
+- Call `list_gmail_accounts` first. It names every stored account and what it can do.
+- A failed call is a normal tool result with `isError: true` and a plain text body. Examples: `API error in search_gmail_messages: <HttpError 400 ...>`, or a list of missing or invalid arguments. URL query strings in that text read `?<query-redacted>`.
+- An unknown tool name is a JSON-RPC error `-32602` (`Unknown tool: <name>`). It usually means the tool is not loaded with the current `--tools` or tier.
+- Every tool carries `readOnlyHint`. `true` means the tool changes nothing, in Google or on disk. Sign-in and attachment downloads say `false` because they write local files.
+
 After a merge, start the server with `--tools gmail` and check that the tool list still has 57 entries with a service account configured, or 50 without one (14 upstream Gmail tools, `start_google_auth`, `complete_google_auth`, and 41 or 34 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.
 
 Upstream v1.27.0 behavior retained by this fork:
