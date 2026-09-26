@@ -886,6 +886,9 @@ def handle_http_errors(
                 except HttpError as error:
                     user_google_email = kwargs.get("user_google_email", "N/A")
                     error_details = str(error)
+                    # Fork addition: the caller sees this text too, and the
+                    # request URI can carry an API key (search_custom's key=).
+                    safe_error = _scrub_url_queries(error_details)
 
                     # Fork addition: Google answers 429 (or 403 rateLimitExceeded)
                     # before it does any work, so the call is safe to repeat for
@@ -914,7 +917,7 @@ def handle_http_errors(
                             )
                         else:
                             message = (
-                                f"API error in {tool_name}: {error}. "
+                                f"API error in {tool_name}: {safe_error}. "
                                 f"The required API is not enabled for your project. "
                                 f"Please check the Google Cloud Console to enable it."
                             )
@@ -937,13 +940,13 @@ def handle_http_errors(
                                 "and the appropriate service_name."
                             )
                         message = (
-                            f"API error in {tool_name}: {error}. "
+                            f"API error in {tool_name}: {safe_error}. "
                             f"You might need to re-authenticate for user '{user_google_email}'. "
                             f"{auth_hint}"
                         )
                     else:
                         # Other HTTP errors (400 Bad Request, etc.) - don't suggest re-auth
-                        message = f"API error in {tool_name}: {error}"
+                        message = f"API error in {tool_name}: {safe_error}"
 
                     # ERROR gets the scrubbed form (HttpError embeds the request
                     # URI and may echo user content in its response details);

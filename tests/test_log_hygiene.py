@@ -213,8 +213,13 @@ async def test_handle_http_errors_scrubs_request_uri_at_error(caplog):
         raise HttpError(_Resp(), content, uri=uri)
 
     with caplog.at_level(logging.DEBUG):
-        with pytest.raises(Exception):
+        with pytest.raises(Exception) as raised:
             await dummy()
+
+    # The caller gets this text as the tool result, and a query string can
+    # carry an API key (search_custom sends key=GOOGLE_PSE_API_KEY).
+    assert f"?q={SECRET}" not in str(raised.value)
+    assert "<query-redacted>" in str(raised.value)
 
     error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
     assert error_records, "the decorator must still log the failure at ERROR"
