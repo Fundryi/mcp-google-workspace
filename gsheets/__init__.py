@@ -9,11 +9,13 @@ from .sheets_tools import (
     get_spreadsheet_info,
     read_sheet_values,
     modify_sheet_values,
+    insert_smart_chips,
     create_spreadsheet,
     create_sheet,
     list_sheet_tables,
     append_table_rows,
     move_sheet_rows,
+    manage_named_range,
 )
 
 __all__ = [
@@ -21,9 +23,11 @@ __all__ = [
     "get_spreadsheet_info",
     "read_sheet_values",
     "modify_sheet_values",
+    "insert_smart_chips",
     "create_spreadsheet",
     "create_sheet",
     "list_sheet_tables",
     "append_table_rows",
     "move_sheet_rows",
+    "manage_named_range",
 ]

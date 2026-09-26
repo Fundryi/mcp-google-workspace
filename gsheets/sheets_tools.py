@@ -8,14 +8,17 @@ import logging
 import asyncio
 import json
 import copy
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
+from fastmcp.exceptions import ToolError
+from googleapiclient.errors import HttpError
 from mcp.types import ToolAnnotations
 
 from auth.service_decorator import require_google_service
 from core.server import server
 from core.utils import handle_http_errors, UserInputError, StringList
 from core.comments import create_comment_tools
+from gdrive.drive_helpers import move_new_file_to_folder
 from gsheets.sheets_helpers import (
     CONDITION_TYPES,
     MAX_READ_SHEET_ROWS,
@@ -28,8 +31,11 @@ from gsheets.sheets_helpers import (
     _fetch_detailed_sheet_errors,
     _fetch_grid_metadata,
     _fetch_sheets_with_rules,
+    _find_named_range,
     _format_conditional_rules_section,
+    _format_named_ranges_list,
     _format_sheet_error_section,
+    _normalize_chips_input,
     _parse_a1_range,
     _parse_condition_values,
     _parse_gradient_points,
@@ -208,6 +214,7 @@ async def read_sheet_values(
     include_hyperlinks: bool = False,
     include_notes: bool = False,
     include_formulas: bool = False,
+    include_smart_chips: bool = False,
 ) -> str:
     """
     Reads values from a specific range in a Google Sheet.
@@ -225,6 +232,8 @@ async def read_sheet_values(
         include_formulas (bool): If True, also fetch raw formula strings for cells that
             contain formulas. Useful for identifying cross-sheet references before writing
             back to a range. Defaults to False to avoid an extra API request.
+        include_smart_chips (bool): If True, also fetch smart chips metadata (Drive files/folders
+            and People chips) for the range. Defaults to False to avoid expensive includeGridData requests.
 
     Returns:
         str: The formatted values from the specified range.
@@ -252,13 +261,14 @@ async def read_sheet_values(
     values = result.get("values", [])
     resolved_range = result.get("range", range_name)
 
-    hyperlink_section, notes_section = await _fetch_grid_metadata(
+    hyperlink_section, notes_section, smart_chips_section = await _fetch_grid_metadata(
         service,
         spreadsheet_id,
         resolved_range,
         values,
         include_hyperlinks=include_hyperlinks,
         include_notes=include_notes,
+        include_smart_chips=include_smart_chips,
     )
 
     formula_section = ""
@@ -324,6 +334,7 @@ async def read_sheet_values(
         + notes_section
         + formula_section
         + detailed_errors_section
+        + smart_chips_section
     )
 
 
@@ -462,6 +473,177 @@ async def modify_sheet_values(
         )
 
     return text_output
+
+
+# Not in the API docs: the PR author's manual testing hit a 10-chip cap per batchUpdate.
+MAX_DRIVE_CHIPS_PER_BATCH = 8
+
+
+async def _insert_smart_chips_impl(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    range_name: str,
+    chips: Union[str, dict, List[Any]],
+    chip_type: Optional[str] = None,
+) -> str:
+    """Internal implementation for insert_smart_chips.
+
+    Args:
+        service: Google Sheets API service client.
+        user_google_email: The user's Google email address.
+        spreadsheet_id: The ID of the spreadsheet.
+        range_name: Target range or cell (e.g., "Sheet1!F3", "F3:F23").
+        chips: Smart chip(s) specification (string, list, 2D list, dict).
+        chip_type: Optional explicit chip type ("drive" or "person").
+
+    Returns:
+        Confirmation message of the operation.
+    """
+    logger.info(
+        f"[insert_smart_chips] Invoked. Email: '{user_google_email}', Spreadsheet: {spreadsheet_id}, Range: {range_name}"
+    )
+
+    metadata = await asyncio.to_thread(
+        service.spreadsheets()
+        .get(
+            spreadsheetId=spreadsheet_id,
+            fields="sheets(properties(sheetId,title))",
+        )
+        .execute
+    )
+    grid_range = _parse_a1_range(range_name, metadata.get("sheets", []))
+    sheet_id = grid_range["sheetId"]
+    end_row = grid_range.get("endRowIndex")
+    end_col = grid_range.get("endColumnIndex")
+
+    cell_updates = _normalize_chips_input(
+        chips=chips,
+        start_row=grid_range.get("startRowIndex"),
+        end_row=end_row - 1 if end_row is not None else None,
+        start_col=grid_range.get("startColumnIndex"),
+        end_col=end_col - 1 if end_col is not None else None,
+        default_chip_type=chip_type,
+    )
+
+    if not cell_updates:
+        return f"No smart chips to insert for range '{range_name}' in spreadsheet {spreadsheet_id}."
+
+    total_inserted = sum(len(c[2].get("chipRuns", [])) for c in cell_updates)
+
+    batches = []
+    current_batch = []
+    current_chip_count = 0
+    for update in cell_updates:
+        cell_chips = len(update[2].get("chipRuns", []))
+        if cell_chips > MAX_DRIVE_CHIPS_PER_BATCH:
+            raise UserInputError(
+                f"Number of chips in a single cell ({cell_chips}) exceeds the "
+                f"per-batch limit ({MAX_DRIVE_CHIPS_PER_BATCH})."
+            )
+        if current_batch and (
+            current_chip_count + cell_chips > MAX_DRIVE_CHIPS_PER_BATCH
+        ):
+            batches.append(current_batch)
+            current_batch = [update]
+            current_chip_count = cell_chips
+        else:
+            current_batch.append(update)
+            current_chip_count += cell_chips
+    if current_batch:
+        batches.append(current_batch)
+
+    written_cells = 0
+    for batch in batches:
+        requests = []
+        for r_idx, c_idx, cell_data in batch:
+            requests.append(
+                {
+                    "updateCells": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": r_idx,
+                            "endRowIndex": r_idx + 1,
+                            "startColumnIndex": c_idx,
+                            "endColumnIndex": c_idx + 1,
+                        },
+                        "rows": [{"values": [cell_data]}],
+                        "fields": "userEnteredValue,chipRuns",
+                    }
+                }
+            )
+        try:
+            await asyncio.to_thread(
+                service.spreadsheets()
+                .batchUpdate(spreadsheetId=spreadsheet_id, body={"requests": requests})
+                .execute
+            )
+        except HttpError as error:
+            if not written_cells:
+                raise
+            # Earlier batches are already committed, so say which cells changed.
+            raise ToolError(
+                f"Wrote smart chips to {written_cells} of {len(cell_updates)} cells in "
+                f"range '{range_name}' before the Sheets API rejected a batch: {error}"
+            ) from error
+        written_cells += len(batch)
+
+    logger.info(
+        f"[insert_smart_chips] Successfully inserted {total_inserted} smart chips for {user_google_email}."
+    )
+    return (
+        f"Successfully inserted {total_inserted} smart chip(s) into range '{range_name}' "
+        f"in spreadsheet {spreadsheet_id} for {user_google_email}."
+    )
+
+
+@server.tool(
+    title="Insert Smart Chips",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("insert_smart_chips", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def insert_smart_chips(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    range_name: str,
+    chips: Union[str, dict, List[Any]],
+    chip_type: Optional[str] = None,
+) -> str:
+    """
+    Inserts Google Workspace Smart Chips (Drive files/folders or People) into a Google Sheet cell or range.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        spreadsheet_id (str): The ID of the spreadsheet. Required.
+        range_name (str): Target cell or range (e.g., "Sheet1!F3", "Sheet1!F3:F23", "F3"). Required.
+        chips (Union[str, dict, List[Any]]): Smart chip(s) to insert:
+            - A single URL or email string for a single cell (e.g., "https://drive.google.com/drive/folders/123", "user@example.com").
+            - A list of URLs or emails for a single cell (multiple chips) or across cells (e.g., ["https://...", "https://..."]).
+            - A 2D list of URLs/emails matching a grid range. For a single-row or single-column
+              range, each inner list is instead the chips for one cell (e.g., [["a@x.com", "b@x.com"]]
+              puts both chips in the first cell of "A1:C1").
+            - A dict or list of dicts with explicit properties (e.g., {"type": "drive", "uri": "..."}, {"type": "person", "email": "..."}).
+            - A JSON-encoded string representing any of the above formats.
+        chip_type (Optional[str]): Explicit chip type if passing raw strings: "drive" (default for URLs/IDs) or "person" (default for emails).
+
+    Returns:
+        str: Confirmation message of the successful insertion.
+    """
+    return await _insert_smart_chips_impl(
+        service=service,
+        user_google_email=user_google_email,
+        spreadsheet_id=spreadsheet_id,
+        range_name=range_name,
+        chips=chips,
+        chip_type=chip_type,
+    )
 
 
 # Internal implementation function for testing
@@ -1213,6 +1395,7 @@ async def create_spreadsheet(
     user_google_email: str,
     title: str,
     sheet_names: Optional[StringList] = None,
+    folder_id: str = "root",
 ) -> str:
     """
     Creates a new Google Spreadsheet.
@@ -1221,12 +1404,15 @@ async def create_spreadsheet(
         user_google_email (str): The user's Google email address. Required.
         title (str): The title of the new spreadsheet. Required.
         sheet_names (Optional[List[str]]): List of sheet names to create. If not provided, creates one sheet with default name.
+        folder_id (str): The ID of the parent folder. Defaults to 'root'. For shared
+            drives, this must be a folder ID within the shared drive.
 
     Returns:
         str: Information about the newly created spreadsheet including ID, URL, and locale.
     """
     logger.info(
-        f"[create_spreadsheet] Invoked. Email: '{user_google_email}', title_len={len(title)}"
+        f"[create_spreadsheet] Invoked. Email: '{user_google_email}', "
+        f"title_len={len(title)}, folder_id='{folder_id}'"
     )
 
     spreadsheet_body = {"properties": {"title": title}}
@@ -1250,8 +1436,13 @@ async def create_spreadsheet(
     spreadsheet_url = spreadsheet.get("spreadsheetUrl")
     locale = properties.get("locale", "Unknown")
 
+    placement_note = await move_new_file_to_folder(
+        user_google_email, spreadsheet_id, folder_id, "create_spreadsheet"
+    )
+
     text_output = (
-        f"Successfully created spreadsheet '{title}' for {user_google_email}. "
+        f"Successfully created spreadsheet '{title}' for {user_google_email}."
+        f"{placement_note} "
         f"ID: {spreadsheet_id} | URL: {spreadsheet_url} | Locale: {locale}"
     )
 
@@ -2569,6 +2760,293 @@ async def move_sheet_rows(
 
     logger.info(f"[move_sheet_rows] Moved {num_rows} rows for {user_google_email}")
     return text_output
+
+
+async def _manage_named_range_impl(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    action: str,
+    name: Optional[str] = None,
+    range_name: Optional[str] = None,
+    named_range_id: Optional[str] = None,
+    new_name: Optional[str] = None,
+    new_range: Optional[str] = None,
+) -> str:
+    """Internal implementation of manage_named_range."""
+    valid_actions = ("list", "create", "update", "delete")
+    action_lower = action.strip().lower() if isinstance(action, str) else ""
+    if action_lower not in valid_actions:
+        raise UserInputError(
+            f"Invalid action '{action}'. Must be one of: {', '.join(valid_actions)}."
+        )
+
+    if action_lower == "list":
+        spreadsheet = await asyncio.to_thread(
+            service.spreadsheets()
+            .get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title)),namedRanges(namedRangeId,name,range)",
+            )
+            .execute
+        )
+        sheet_titles = {
+            sheet["properties"]["sheetId"]: sheet["properties"].get(
+                "title", f"Sheet {sheet['properties']['sheetId']}"
+            )
+            for sheet in spreadsheet.get("sheets", [])
+            if "properties" in sheet and "sheetId" in sheet["properties"]
+        }
+        named_ranges = spreadsheet.get("namedRanges", [])
+        return _format_named_ranges_list(
+            named_ranges=named_ranges,
+            sheet_titles=sheet_titles,
+            spreadsheet_id=spreadsheet_id,
+            user_google_email=user_google_email,
+        )
+
+    if action_lower == "create":
+        if not name or not name.strip():
+            raise UserInputError("name is required for action='create'.")
+        if not range_name or not range_name.strip():
+            raise UserInputError("range_name is required for action='create'.")
+
+        name_clean = name.strip()
+        range_clean = range_name.strip()
+
+        spreadsheet = await asyncio.to_thread(
+            service.spreadsheets()
+            .get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title))",
+            )
+            .execute
+        )
+        sheets = spreadsheet.get("sheets", [])
+        grid_range = _parse_a1_range(range_clean, sheets)
+
+        body = {
+            "requests": [
+                {
+                    "addNamedRange": {
+                        "namedRange": {
+                            "name": name_clean,
+                            "range": grid_range,
+                        }
+                    }
+                }
+            ]
+        }
+        response = await asyncio.to_thread(
+            service.spreadsheets()
+            .batchUpdate(spreadsheetId=spreadsheet_id, body=body)
+            .execute
+        )
+
+        created_nr = (
+            (response.get("replies") or [{}])[0]
+            .get("addNamedRange", {})
+            .get("namedRange", {})
+        )
+        created_id = created_nr.get("namedRangeId", "")
+        id_info = f" (ID: {created_id})" if created_id else ""
+
+        return (
+            f"Successfully created named range '{name_clean}'{id_info} covering '{range_clean}' "
+            f"in spreadsheet {spreadsheet_id} for {user_google_email}."
+        )
+
+    if action_lower == "update":
+        if not (new_name and new_name.strip()) and not (
+            new_range and new_range.strip()
+        ):
+            raise UserInputError(
+                "At least one of 'new_name' or 'new_range' must be provided for action='update'."
+            )
+        if not (named_range_id and named_range_id.strip()) and not (
+            name and name.strip()
+        ):
+            raise UserInputError(
+                "Either 'named_range_id' or 'name' is required to identify the named range to update."
+            )
+
+        spreadsheet = await asyncio.to_thread(
+            service.spreadsheets()
+            .get(
+                spreadsheetId=spreadsheet_id,
+                fields="sheets(properties(sheetId,title)),namedRanges(namedRangeId,name,range)",
+            )
+            .execute
+        )
+        sheets = spreadsheet.get("sheets", [])
+        named_ranges = spreadsheet.get("namedRanges", [])
+
+        target_nr = _find_named_range(
+            named_ranges, target_id=named_range_id, target_name=name
+        )
+        if not target_nr:
+            identifier = (
+                f"ID '{named_range_id}'" if named_range_id else f"name '{name}'"
+            )
+            raise UserInputError(
+                f"Named range with {identifier} not found in spreadsheet {spreadsheet_id}."
+            )
+
+        resolved_id = target_nr.get("namedRangeId")
+        existing_name = target_nr.get("name", "")
+
+        update_payload: dict = {"namedRangeId": resolved_id}
+        fields = []
+        applied_desc = []
+
+        if new_name and new_name.strip():
+            new_name_clean = new_name.strip()
+            if new_name_clean != existing_name:
+                update_payload["name"] = new_name_clean
+                fields.append("name")
+                applied_desc.append(
+                    f"renamed from '{existing_name}' to '{new_name_clean}'"
+                )
+
+        if new_range and new_range.strip():
+            new_range_clean = new_range.strip()
+            new_grid_range = _parse_a1_range(new_range_clean, sheets)
+            update_payload["range"] = new_grid_range
+            fields.append("range")
+            applied_desc.append(f"range updated to '{new_range_clean}'")
+
+        if not fields:
+            raise UserInputError("No changes to apply to the named range.")
+
+        body = {
+            "requests": [
+                {
+                    "updateNamedRange": {
+                        "namedRange": update_payload,
+                        "fields": ",".join(fields),
+                    }
+                }
+            ]
+        }
+        await asyncio.to_thread(
+            service.spreadsheets()
+            .batchUpdate(spreadsheetId=spreadsheet_id, body=body)
+            .execute
+        )
+
+        return (
+            f"Successfully updated named range (ID: {resolved_id}) in spreadsheet {spreadsheet_id} "
+            f"for {user_google_email}: {', '.join(applied_desc)}."
+        )
+
+    if action_lower == "delete":
+        if not (named_range_id and named_range_id.strip()) and not (
+            name and name.strip()
+        ):
+            raise UserInputError(
+                "Either 'named_range_id' or 'name' is required to identify the named range to delete."
+            )
+
+        resolved_id = named_range_id.strip() if named_range_id else None
+        deleted_name = name.strip() if name else None
+
+        if not resolved_id:
+            spreadsheet = await asyncio.to_thread(
+                service.spreadsheets()
+                .get(
+                    spreadsheetId=spreadsheet_id,
+                    fields="namedRanges(namedRangeId,name)",
+                )
+                .execute
+            )
+            named_ranges = spreadsheet.get("namedRanges", [])
+            target_nr = _find_named_range(named_ranges, target_name=name)
+            if not target_nr:
+                raise UserInputError(
+                    f"Named range with name '{name}' not found in spreadsheet {spreadsheet_id}."
+                )
+            resolved_id = target_nr.get("namedRangeId")
+            deleted_name = target_nr.get("name", name)
+
+        body = {
+            "requests": [
+                {
+                    "deleteNamedRange": {
+                        "namedRangeId": resolved_id,
+                    }
+                }
+            ]
+        }
+        await asyncio.to_thread(
+            service.spreadsheets()
+            .batchUpdate(spreadsheetId=spreadsheet_id, body=body)
+            .execute
+        )
+
+        name_info = f"'{deleted_name}' " if deleted_name else ""
+        return (
+            f"Successfully deleted named range {name_info}(ID: {resolved_id}) "
+            f"from spreadsheet {spreadsheet_id} for {user_google_email}."
+        )
+
+    raise UserInputError(f"Unhandled action: {action}")
+
+
+@server.tool(
+    title="Manage Named Range",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("manage_named_range", service_type="sheets")
+@require_google_service("sheets", "sheets_write")
+async def manage_named_range(
+    service,
+    user_google_email: str,
+    spreadsheet_id: str,
+    action: str,
+    name: Optional[str] = None,
+    range_name: Optional[str] = None,
+    named_range_id: Optional[str] = None,
+    new_name: Optional[str] = None,
+    new_range: Optional[str] = None,
+) -> str:
+    """
+    Manages the lifecycle of named ranges in a Google Sheet: list, create, update, or delete.
+
+    Args:
+        user_google_email: The user's Google email address. Required.
+        spreadsheet_id: The ID of the spreadsheet. Required.
+        action: The operation to perform: "list", "create", "update", or "delete". Required.
+        name: Name for the named range (required for "create"; optional identifier for "update"/"delete").
+        range_name: Target cell or range in A1 notation (e.g., "Sheet1!A1:D10", "A1:B5") (required for "create").
+        named_range_id: The ID of the named range (optional identifier for "update"/"delete").
+        new_name: New name for the named range (used with action="update").
+        new_range: New A1-style range for the named range (used with action="update").
+
+    Returns:
+        str: Confirmation message or formatted list of named ranges.
+    """
+    logger.info(
+        "[manage_named_range] Invoked. Email: '%s', Spreadsheet: %s, Action: %s",
+        user_google_email,
+        spreadsheet_id,
+        action,
+    )
+    return await _manage_named_range_impl(
+        service=service,
+        user_google_email=user_google_email,
+        spreadsheet_id=spreadsheet_id,
+        action=action,
+        name=name,
+        range_name=range_name,
+        named_range_id=named_range_id,
+        new_name=new_name,
+        new_range=new_range,
+    )
 
 
 # Create comment management tools for sheets

@@ -64,7 +64,7 @@ The README covers just enough to get you running, with extensive documentation o
 | **[Full&nbsp;Documentation](https://workspacemcp.com/docs?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=nav-docs)** | Every tool, parameter, and auth mode |
 | **[Advanced&nbsp;Deployment](https://workspacemcp.com/docs/deployment?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=nav-deployment)** | Reverse proxy & nginx config, origin validation, credential store backends (GCS/CMEK), [trusted-gateway identity](https://workspacemcp.com/docs/deployment/gateway-identity?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=nav-gateway-identity), and the complete environment variable reference |
 | **[Client&nbsp;Setup&nbsp;Guides](https://workspacemcp.com/guides?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=nav-guides)** | Claude Desktop/web Connectors, ChatGPT Developer Mode, and more |
-| **[FAQ&nbsp;&&nbsp;Troubleshooting](https://workspacemcp.com/welcome/faq?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=nav-faq)** | OAuth errors, redirect URIs, Google Chat setup, client quirks |
+| **[FAQ&nbsp;&&nbsp;Troubleshooting](https://workspacemcp.com/welcome/faq?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=nav-faq)** | Enabling Google APIs, OAuth errors, redirect URIs, Google Chat setup, client quirks |
 
 ## <span style="color:#adbcbc">Security & Compliance</span>
 
@@ -242,7 +242,7 @@ Upstream v1.27.0 behavior retained by this fork:
 | `manage_event` | Preserves explicit timestamp instants, validates timestamps and IANA zones, and reports saved times and elapsed duration. |
 | `send_gmail_message`, `draft_gmail_message`, `forward_gmail_message` | Converts bare newlines in caller HTML before composing signatures or quoted content. |
 | `list_drive_items(resource_type="shared_drives", include_organizers=True)` | Fetches organizers one request at a time on the shared Google connection. |
-| `list_script_processes` | With `script_id`, lists visible runs of that script, including other users' runs. |
+| `get_script_activity(action="processes")` | With `script_id`, lists visible runs of that script, including other users' runs. |
 
 Credential-free startup and read-only discovery smoke: `uv run --frozen pytest tests/test_stdio_tool_listing.py -s`. It starts the server, sends MCP `initialize` and `tools/list`, then checks a clean exit; it never calls a Google tool.
 
@@ -252,7 +252,7 @@ Read-only mode hides tools requiring Google write scopes. Sign-in and attachment
 
 > Set credentials → pick a launch command → connect your client. Full walkthrough with screenshots: **[workspacemcp.com/quick-start](https://workspacemcp.com/quick-start?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=quickstart-hero)**
 
-You'll need an OAuth client from [Google Cloud Console](https://console.cloud.google.com/) with the APIs enabled for the services you plan to use - the [quick start guide](https://workspacemcp.com/quick-start?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=quickstart-inline) walks through it in about five minutes.
+You'll need an OAuth client from [Google Cloud Console](https://console.cloud.google.com/) in a project with the Google APIs enabled for the services you plan to use. The docs have [one-click enable links for every API](https://workspacemcp.com/docs?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=quickstart-enable-apis#authentication) plus a single `gcloud services enable` command that covers them all, and the [quick start guide](https://workspacemcp.com/quick-start?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=quickstart-inline) walks through the whole setup in about five minutes.
 
 <table>
 <tr>
@@ -346,7 +346,13 @@ Everything you need to run this in production lives in two places. The [document
 The **[Advanced Deployment guide](https://workspacemcp.com/docs/deployment?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=deploy-advanced)** covers self-hosting specifics: reverse proxy setup with `WORKSPACE_EXTERNAL_URL` (including the nginx `Origin: null` consent workaround, the `WORKSPACE_MCP_ALLOW_NULL_ORIGIN_CONSENT` escape hatch, and the `Referrer-Policy` pitfall), origin validation and VS Code webview allowlisting, credential store backends (local directory or GCS with CMEK enforcement), and the **[complete environment variable reference](https://workspacemcp.com/docs/deployment?utm_source=github.com&utm_medium=referral&utm_campaign=readme&utm_content=deploy-env-vars#environment-variables)**.
 Optional per-download payload ceiling for container deployments: set `WORKSPACE_MCP_MAX_FILE_BYTES` to a positive byte count (e.g. `5242880` for 5 MiB) to reject Drive / Gmail / Chat / Google Docs downloads that would otherwise be fully buffered in-process. Unset or `0` leaves the total size uncapped; uncapped Drive transfers still use 256 KiB transport chunks instead of the Google client's 100 MiB default. This is a file-size limit, not a process-RSS limit: leave headroom for parsing, base64/JSON representation, and concurrent tool calls. Invalid or negative values fail server startup instead of silently disabling the limit. Downloads streamed directly to disk are not subject to this in-memory payload ceiling.
 
-Advanced OAuth 2.1 deployments affected by concurrent client token refreshes can tune FastMCP's early-refresh threshold and client-facing access-token lifetime. See [`.env.oauth21`](.env.oauth21) for the bounded settings, recommended values, and security tradeoffs. These settings reduce how often the race occurs; they do not add a grace period to FastMCP's one-time-use refresh-token rotation.
+Hosted deployments where the server cannot see the caller's disk can set `WORKSPACE_MCP_DISABLE_LOCAL_FILES=true`. Tools then stop advertising server-side `file_path` parameters and refuse local paths with guidance to pass a URL or inline content instead. Stateless mode implies this setting. It is off by default, including for streamable HTTP, because a server on `localhost` shares the client's filesystem.
+
+On such a server uploads can bypass it entirely: `create_drive_file`, `update_drive_file` and the `import_to_google_*` tools accept `return_upload_url=true`, which opens a Google Drive resumable upload session and returns its pre-authorized URL. The client then `PUT`s the bytes straight to Google (no Authorization header), so large or binary files never pass through the MCP server or the model context. The two settings are two sides of one switch: `return_upload_url` is advertised only when `WORKSPACE_MCP_DISABLE_LOCAL_FILES` is set (or in stateless mode), and a server with local file access refuses it, since `file_path` is the route there.
+
+Office files (`.docx`, `.xlsx`, `.pptx`) are ZIP archives, so the ceiling above bounds only their compressed size. Text extraction separately applies `WORKSPACE_MCP_MAX_OFFICE_XML_BYTES` (default `26214400`, 25 MiB) as independent limits on expanded XML and extracted UTF-8 text. A file beyond either limit is reported as too large to extract. These limits bound input and output size, not process memory: the parsed XML tree measured roughly 14 to 30 times the XML size, so lower the value on small containers. `0` removes both limits; invalid or negative values fail server startup.
+
+Advanced OAuth 2.1 deployments affected by concurrent client token refreshes can tune FastMCP's early-refresh threshold and client-facing access-token lifetime, and deployments that want to bound how long per-login records stay in the OAuth proxy storage backend can shorten the client-facing refresh-token lifetime. See [`.env.oauth21`](.env.oauth21) for the bounded settings, recommended values, and security tradeoffs. The first two settings reduce how often the race occurs; they do not add a grace period to FastMCP's one-time-use refresh-token rotation.
 
 ## Security Best Practices
 

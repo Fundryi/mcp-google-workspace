@@ -28,6 +28,7 @@ from core.file_limits import (
 from core.utils import (
     GOOGLE_API_WRITE_RETRIES,
     OfficeXmlExtractionError,
+    OfficeXmlTooLargeError,
     extract_office_xml_text,
     handle_http_errors,
     UserInputError,
@@ -81,6 +82,7 @@ from gdocs.managers import (
     ValidationManager,
     BatchOperationManager,
 )
+from gdrive.drive_helpers import move_new_file_to_folder
 import json
 
 logger = logging.getLogger(__name__)
@@ -373,6 +375,9 @@ async def get_doc_content(
 
         try:
             office_text = extract_office_xml_text(file_content_bytes, mime_type)
+        except OfficeXmlTooLargeError as e:
+            # Not damaged, and not to be retried as raw text: say what happened.
+            office_text = f"[Could not read '{mime_type}' file - {e}]"
         except OfficeXmlExtractionError as e:
             office_text = (
                 f"[Could not read '{mime_type}' file - it appears damaged or is "
@@ -466,6 +471,7 @@ async def create_doc(
     user_google_email: str,
     title: str,
     content: str = "",
+    folder_id: str = "root",
 ) -> str:
     """
     Creates a new Google Doc and optionally inserts initial content.
@@ -482,18 +488,26 @@ async def create_doc(
         user_google_email: User's Google email address
         title: Title of the new document
         content: Optional initial plain text content to insert
+        folder_id: The ID of the parent folder. Defaults to 'root'. For shared
+            drives, this must be a folder ID within the shared drive.
 
     Returns:
         str: Confirmation message with document ID, link, and initial document state.
     """
     logger.info(
-        f"[create_doc] Invoked. Email: '{user_google_email}', title_len={len(title)}"
+        f"[create_doc] Invoked. Email: '{user_google_email}', title_len={len(title)}, "
+        f"folder_id='{folder_id}'"
     )
 
     doc = await asyncio.to_thread(
         service.documents().create(body={"title": title}).execute
     )
     doc_id = doc.get("documentId")
+
+    placement_note = await move_new_file_to_folder(
+        user_google_email, doc_id, folder_id, "create_doc"
+    )
+
     if content:
         requests = [{"insertText": {"location": {"index": 1}, "text": content}}]
         await asyncio.to_thread(
@@ -507,7 +521,8 @@ async def create_doc(
     else:
         content_note = "Document is empty (body starts at index 1, total length 2)."
     msg = (
-        f"Created Google Doc '{title}' (ID: {doc_id}) for {user_google_email}. "
+        f"Created Google Doc '{title}' (ID: {doc_id}) for {user_google_email}."
+        f"{placement_note} "
         f"{content_note} "
         f"Use batch_update_doc with end_of_segment=true to append content. "
         f"Link: {link}"

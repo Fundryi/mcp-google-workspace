@@ -142,11 +142,13 @@ Before pushing, run both at the pinned version:
 A hand-resolved merge conflict is the usual way this breaks: deleting the
 `<<<<<<<` markers also eats the blank lines the formatter wants.
 
-On Windows, 7 upstream tests always fail: POSIX file modes and HOME paths in
+On Windows, 9 upstream tests always fail: POSIX file modes and HOME paths in
 `test_credential_security.py`, `test_attachment_storage.py`,
 `test_startup_ui.py` and `test_oauth_config_client_secret_file.py`, and both
 cases of `test_stdio_tool_listing.py`, whose child process gets no home
-directory. They pass on Linux. Everything else must be green.
+directory. Since v1.29.0 also two in `test_local_file_access.py`: one reads
+source files as cp1252, and one hits `C:\` being parsed as a URL scheme.
+They pass on Linux. Everything else must be green.
 
 Match upstream's conventions in files we add. New tools go in
 `*_extended_tools.py` modules with one import line at the bottom of the

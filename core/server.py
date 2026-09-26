@@ -14,6 +14,7 @@ install_startup_warning_filters()
 
 from auth.auth_info_middleware import AuthInfoMiddleware
 from core.camel_case_middleware import CamelCaseArgumentsMiddleware
+from core.portable_schema_middleware import PortableSchemaMiddleware
 from core.unknown_tool_middleware import UnknownToolMiddleware
 from auth.google_auth import (
     handle_auth_callback,
@@ -378,7 +379,7 @@ A failed call returns a normal result with isError and a readable text body; fix
 Parameter names are snake_case; the one exception is create_drive_file's `fileUrl` (`file_url` is accepted as an alias).
 List tools stop at their page_size / max_* cap; when more results exist the last line of the result says "Capped at N". Raise the cap or use the tool's page token to continue.
 get_doc_content(preserve_context=True) includes links, chips, and document segments; use the default output for editing indices. Calendar timestamp offsets preserve the exact instant; for local wall time omit the offset and supply an IANA timezone, then check the saved times in the result.
-Gmail send, draft, and forward tools render bare newlines in caller-supplied HTML as line breaks before adding signatures or quoted content. list_script_processes(script_id=...) includes visible runs by other users of that script."""
+Gmail send, draft, and forward tools render bare newlines in caller-supplied HTML as line breaks before adding signatures or quoted content. get_script_activity(action="processes", script_id=...) includes visible runs by other users of that script."""
 _server_instructions = (
     f"{_server_instructions}\n\n{_SARDINE_NOTES}"
     if _server_instructions
@@ -409,6 +410,11 @@ server.add_middleware(auth_info_middleware)
 # parameters. See https://github.com/taylorwilsdon/google_workspace_mcp/issues/918
 server.add_middleware(CamelCaseArgumentsMiddleware())
 server.add_middleware(UnknownToolMiddleware())
+
+# Advertise tool schemas without null unions or ``const``, which Gemini's
+# function-calling schema cannot represent. See
+# https://github.com/taylorwilsdon/google_workspace_mcp/issues/1099
+server.add_middleware(PortableSchemaMiddleware())
 
 
 def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:

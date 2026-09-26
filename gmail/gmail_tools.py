@@ -560,11 +560,11 @@ def _build_message_get_request(
     return service.users().messages().get(**request_kwargs)
 
 
-def _validate_message_batch_options(
+def _validate_message_format_options(
     response_format: Literal["full", "metadata"],
     body_format: Literal["text", "html", "raw"],
 ) -> None:
-    """Reject incompatible output combinations for batch message reads."""
+    """Reject incompatible output combinations for message reads."""
     if response_format == "metadata" and body_format != "text":
         raise UserInputError(
             "body_format='html' and body_format='raw' require format='full'."
@@ -818,27 +818,102 @@ def _extract_attachments(payload: dict) -> List[Dict[str, Any]]:
     """
     attachments = []
 
-    def search_parts(part):
-        """Recursively search for attachments in message parts"""
+    pending = [(payload, False)]
+    while pending:
+        part, in_attached_message = pending.pop()
         # Check if this part is an attachment
         if part.get("filename") and part.get("body", {}).get("attachmentId"):
+            # Files inside a wrapped message (message/rfc822) are fetched with the
+            # outer message's ID, so keep them listed but flag their origin.
             attachments.append(
                 {
                     "filename": part["filename"],
                     "mimeType": part.get("mimeType", "application/octet-stream"),
                     "size": part.get("body", {}).get("size", 0),
                     "attachmentId": part["body"]["attachmentId"],
+                    "inAttachedMessage": in_attached_message,
                 }
             )
 
-        # Recursively search sub-parts
+        # Reverse the push order to preserve depth-first attachment ordering.
         if "parts" in part:
-            for subpart in part["parts"]:
-                search_parts(subpart)
+            nested = in_attached_message or (
+                (part.get("mimeType") or "").lower() == "message/rfc822"
+            )
+            pending.extend((subpart, nested) for subpart in reversed(part["parts"]))
 
-    # Start searching from the root payload
-    search_parts(payload)
     return attachments
+
+
+ATTACHED_MESSAGE_MAX_DEPTH = 3
+ATTACHED_MESSAGE_MAX_COUNT = 5
+ATTACHED_MESSAGE_HEADER_LIMIT = 1000
+
+
+def _render_attached_messages(
+    payload: dict, body_format: Literal["text", "html"] = "text"
+) -> str:
+    """Render emails wrapped inside this one (message/rfc822 parts) as text.
+
+    _extract_message_bodies descends only into multipart/* containers, so a
+    wrapped email (forward-as-attachment, moderation notice, bounce, digest) is
+    otherwise invisible to the read tools. The wrapped message's MIME tree is
+    the child of the message/rfc822 part. Returns "" when there is no such part.
+    Wrapped headers are printed as the attachment claims them: unlike the
+    wrapper's, they are unverified.
+    """
+    blocks: List[str] = []
+    counts = {"shown": 0, "over_limit": 0, "too_deep": 0}
+    names = ["From", "To", "Cc", "Subject", "Date"]
+
+    # Depth counts attached messages only; ordinary MIME nesting uses the stack.
+    pending = [(child, 1) for child in reversed(payload.get("parts") or [])]
+    while pending:
+        child, depth = pending.pop()
+        mime_type = (child.get("mimeType") or "").lower()
+        if mime_type == "message/rfc822" and child.get("parts"):
+            if depth > ATTACHED_MESSAGE_MAX_DEPTH:
+                counts["too_deep"] += 1
+                continue
+            if counts["shown"] >= ATTACHED_MESSAGE_MAX_COUNT:
+                counts["over_limit"] += 1
+                continue
+            counts["shown"] += 1
+            inner = child["parts"][0]
+            # Fall back to the rfc822 part's headers if the inner root lacks them.
+            headers = _extract_headers(inner, names) or _extract_headers(child, names)
+            bodies = _extract_message_bodies(inner)
+            body = _format_body_content(
+                bodies.get("text", ""), bodies.get("html", ""), body_format
+            )
+            lines = [
+                f"--- ATTACHED MESSAGE {counts['shown']} (headers as claimed "
+                "by the attachment, unverified) ---"
+            ]
+            for name in names:
+                if name in headers:
+                    value = headers[name]
+                    if len(value) > ATTACHED_MESSAGE_HEADER_LIMIT:
+                        value = value[:ATTACHED_MESSAGE_HEADER_LIMIT] + " [truncated]"
+                    lines.append(f"{name}: {value}")
+            lines += ["", _truncate_content(body, HTML_BODY_TRUNCATE_LIMIT)]
+            blocks.append("\n".join(lines))
+            child = inner
+            depth += 1
+        # Preserve depth-first rendering and which messages fall within the limit.
+        pending.extend((part, depth) for part in reversed(child.get("parts") or []))
+
+    if counts["over_limit"]:
+        blocks.append(
+            f"--- {counts['over_limit']} more attached message(s) not shown "
+            f"(limit {ATTACHED_MESSAGE_MAX_COUNT}) ---"
+        )
+    if counts["too_deep"]:
+        blocks.append(
+            f"--- {counts['too_deep']} attached message(s) nested more than "
+            f"{ATTACHED_MESSAGE_MAX_DEPTH} deep not shown ---"
+        )
+    return "".join(f"\n\n{block}" for block in blocks)
 
 
 def _find_attachment_metadata(payload: dict, attachment_id: str) -> Optional[dict]:
@@ -916,6 +991,17 @@ async def _fetch_thread_reply_context(
         request = service.users().threads().get(**request_kwargs)
         thread = await asyncio.to_thread(request.execute)
     except Exception as e:
+        # 400/404 means the thread_id is wrong, not a transient failure. Falling
+        # through attaches no threadId, silently creating a standalone draft (no
+        # recipient or subject) that still reports success.
+        if _http_error_status(e) in (400, 404):
+            raise UserInputError(
+                f"Thread '{thread_id}' was not found, or is not a valid Gmail API "
+                "thread ID. Use the Thread ID returned by search_gmail_messages or "
+                "get_gmail_thread_content (a hex string such as "
+                "'18c2f3a4b5d6e7f8'). The token in a Gmail web URL is a different "
+                "identifier and cannot be used here."
+            ) from e
         logger.warning(f"Failed to fetch reply context for thread {thread_id}: {e}")
         return None
 
@@ -1759,7 +1845,7 @@ async def get_gmail_message_content(
         Literal["text", "html", "raw"],
         Field(
             description=(
-                "Body output format. "
+                "Body output format (only applies when format='full'). "
                 "'text' (default) returns plaintext (HTML converted to text as fallback). "
                 "'html' returns the raw HTML body as-is without conversion. "
                 "'raw' fetches the full raw MIME message and returns the base64url-decoded content."
@@ -1779,6 +1865,7 @@ async def get_gmail_message_content(
             ),
         ),
     ] = False,
+    format: Literal["full", "metadata"] = "full",
 ) -> str:
     """
     Retrieves the full content (subject, sender, recipients, body) of a specific Gmail message.
@@ -1793,7 +1880,8 @@ async def get_gmail_message_content(
     Args:
         message_id (str): The unique ID of the Gmail message to retrieve.
         user_google_email (str): The user's Google email address. Required.
-        body_format (Literal["text", "html", "raw"]): Body output format.
+        body_format (Literal["text", "html", "raw"]): Body output format (only applies
+            when format='full').
             "text" (default) returns plaintext (HTML converted to text as fallback).
             "html" returns the raw HTML body as-is without conversion.
             "raw" fetches the full raw MIME message and returns the base64url-decoded content.
@@ -1804,6 +1892,8 @@ async def get_gmail_message_content(
             exports decode as UTF-8 and drop undecodable bytes, so prefer "raw" when
             byte-exact fidelity matters. In stateless mode there is no storage to write
             to, so the untruncated content is returned inline instead.
+        format (Literal["full", "metadata"]): Message format. "full" (default) includes
+            the body and attachments, "metadata" only headers.
 
     Returns:
         str: The message details including subject, sender, date, Message-ID, recipients
@@ -1813,8 +1903,12 @@ async def get_gmail_message_content(
     """
     logger.info(
         f"[get_gmail_message_content] Invoked. Message ID: '{message_id}', "
-        f"Email: '{user_google_email}', body_format='{body_format}', full={full}"
+        f"Email: '{user_google_email}', format='{format}', "
+        f"body_format='{body_format}', full={full}"
     )
+    _validate_message_format_options(format, body_format)
+    if format == "metadata" and full:
+        raise UserInputError("full=True requires format='full'.")
 
     # Fetch message metadata first to get headers
     message_metadata = await asyncio.to_thread(
@@ -1832,6 +1926,9 @@ async def get_gmail_message_content(
     headers = _extract_headers(
         message_metadata.get("payload", {}), GMAIL_METADATA_HEADERS
     )
+
+    if format == "metadata":
+        return "\n".join(_format_message_header_lines(headers))
 
     # Full export: hand back a file reference instead of the (truncated) body.
     if full:
@@ -1882,7 +1979,10 @@ async def get_gmail_message_content(
     attachments = _extract_attachments(payload)
 
     content_lines = _format_message_header_lines(headers)
-    content_lines.append(f"\n--- BODY ---\n{body_data or '[No text/plain body found]'}")
+    content_lines.append(
+        f"\n--- BODY ---\n{body_data or '[No text/plain body found]'}"
+        f"{_render_attached_messages(payload, body_format)}"
+    )
 
     # Add attachment information if present
     if attachments:
@@ -1890,7 +1990,7 @@ async def get_gmail_message_content(
         for attachment_index, att in enumerate(attachments):
             size_kb = att["size"] / 1024
             content_lines.append(
-                f"{attachment_index + 1}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)\n"
+                f"{attachment_index + 1}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB){' [in attached message]' if att.get('inAttachedMessage') else ''}\n"
                 f"   Attachment ID: {att['attachmentId']}\n"
                 f"   Use get_gmail_attachment_content(message_id='{message_id}', "
                 f"attachment_id='{att['attachmentId']}', attachment_index={attachment_index}) to download"
@@ -1951,7 +2051,7 @@ async def get_gmail_messages_content_batch(
 
     if not message_ids:
         raise Exception("No message IDs provided")
-    _validate_message_batch_options(format, body_format)
+    _validate_message_format_options(format, body_format)
 
     output_messages = []
     message_format: Literal["metadata", "full"] = (
@@ -2076,7 +2176,7 @@ async def get_gmail_messages_content_batch(
                         html_body = bodies.get("html", "")
                         body_data = _format_body_content(
                             text_body, html_body, body_format=body_format
-                        )
+                        ) + _render_attached_messages(payload, body_format)
                         body_label = "BODY"
 
                     attachments = _extract_attachments(payload)
@@ -2092,7 +2192,7 @@ async def get_gmail_messages_content_batch(
                         for attachment_index, att in enumerate(attachments):
                             size_kb = att["size"] / 1024
                             msg_output += (
-                                f"{attachment_index + 1}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)\n"
+                                f"{attachment_index + 1}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB){' [in attached message]' if att.get('inAttachedMessage') else ''}\n"
                                 f"   Attachment ID: {att['attachmentId']}\n"
                                 f"   Use get_gmail_attachment_content(message_id='{mid}', "
                                 f"attachment_id='{att['attachmentId']}', attachment_index={attachment_index}) to download\n"
@@ -3346,7 +3446,7 @@ def _format_thread_content(
             # Format body content with HTML fallback
             body_data = _format_body_content(
                 text_body, html_body, body_format=body_format
-            )
+            ) + _render_attached_messages(payload, body_format)
             body_label = "BODY"
 
         # Extract attachment metadata for this message
@@ -3398,7 +3498,7 @@ def _format_thread_content(
             for attachment_index, att in enumerate(attachments):
                 size_kb = att["size"] / 1024
                 content_lines.append(
-                    f"{attachment_index + 1}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)\n"
+                    f"{attachment_index + 1}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB){' [in attached message]' if att.get('inAttachedMessage') else ''}\n"
                     f"   Attachment ID: {att['attachmentId']}\n"
                     f"   Use get_gmail_attachment_content(message_id='{message_id}', "
                     f"attachment_id='{att['attachmentId']}', attachment_index={attachment_index}) to download"
@@ -3942,7 +4042,9 @@ async def manage_gmail_label(
     action: Literal["create", "update", "delete"],
     name: Optional[str] = None,
     label_id: Optional[str] = None,
-    label_list_visibility: Optional[Literal["labelShow", "labelHide"]] = None,
+    label_list_visibility: Optional[
+        Literal["labelShow", "labelShowIfUnread", "labelHide"]
+    ] = None,
     message_list_visibility: Optional[Literal["show", "hide"]] = None,
     background_color: Optional[str] = None,
     text_color: Optional[str] = None,
@@ -3959,8 +4061,8 @@ async def manage_gmail_label(
         action (Literal["create", "update", "delete"]): Action to perform on the label.
         name (Optional[str]): Label name. Required for create, optional for update.
         label_id (Optional[str]): Label ID. Required for update and delete operations.
-        label_list_visibility (Optional[Literal["labelShow", "labelHide"]]): Whether the label is shown in the label list. None leaves it unchanged; create defaults to labelShow.
-        message_list_visibility (Optional[Literal["show", "hide"]]): Whether the label is shown in the message list. None leaves it unchanged; create defaults to show.
+        label_list_visibility (Optional[Literal["labelShow", "labelShowIfUnread", "labelHide"]]): Whether the label is shown in the label list. Defaults to "labelShow" on create. On update, omitting it keeps the label's current setting.
+        message_list_visibility (Optional[Literal["show", "hide"]]): Whether the label's messages are shown in the message list. Defaults to "show" on create. On update, omitting it keeps the label's current setting.
         background_color (Optional[str]): Label background color as a hex string, e.g. "#fb4c2f". Set together with text_color; Gmail requires both. Gmail accepts only its own palette, and an unsupported value is rejected before the request. Colors apply to user labels, not system labels.
         text_color (Optional[str]): Label text color as a hex string, e.g. "#ffffff". Set together with background_color. Same palette. On update, omitting both keeps the label's current color.
         clear_color (bool): On update, remove the label's current color. Cannot be combined with background_color or text_color.
@@ -4021,6 +4123,9 @@ async def manage_gmail_label(
             if key in ("name", "labelListVisibility", "messageListVisibility", "color")
         }
         label_object["id"] = label_id
+        # Gmail omits the visibility fields on some labels.
+        label_object.setdefault("labelListVisibility", "labelShow")
+        label_object.setdefault("messageListVisibility", "show")
         for key, value in (
             ("name", name),
             ("labelListVisibility", label_list_visibility),

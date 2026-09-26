@@ -35,13 +35,13 @@ SERVICE_MODULES = (
 # Upstream gather sites serialize Google requests with a semaphore of one.
 # Keep the upstream structure, and pin those limits below.
 KNOWN_UPSTREAM_FANOUTS = {
-    ("gdrive/drive_tools.py", "_bounded_fetch_organizers"),
+    ("gdrive/drive_helpers.py", "_bounded_fetch_organizers"),
     ("gchat/chat_tools.py", "fetch_space_messages"),
 }
 
 
 def test_allowlisted_gather_sites_serialize_google_requests():
-    from gdrive.drive_tools import SHARED_DRIVE_ORGANIZER_CONCURRENCY_LIMIT
+    from gdrive.drive_helpers import SHARED_DRIVE_ORGANIZER_CONCURRENCY_LIMIT
     from gchat.chat_tools import _SEARCH_MESSAGES_MAX_CONCURRENT_SPACE_FETCHES
 
     assert SHARED_DRIVE_ORGANIZER_CONCURRENCY_LIMIT == 1
