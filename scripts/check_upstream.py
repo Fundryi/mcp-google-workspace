@@ -28,8 +28,9 @@ FORK_TOUCHED = [
 
 PROMPT = """Merge the latest upstream into this fork without losing our additions.
 
-Context: this repo is a private fork of taylorwilsdon/google_workspace_mcp.
-Our additions are listed in README.md ("About this fork") and CLAUDE.local.md.
+Context: this repo is an independent fork of taylorwilsdon/google_workspace_mcp.
+Our additions are listed in README.md ("About this fork") and, per upstream file
+with what to re-apply, in FORK-LEDGER.local.md.
 New tools live in gmail/gmail_extended_tools.py and auth/allowlist.py,
 auth/account_capabilities.py. Upstream files only carry additive lines.
 
