@@ -969,11 +969,25 @@ async def _delete_script_project_impl(
         f"[delete_script_project] Email: {user_google_email}, ScriptID: {script_id}"
     )
 
-    # Apps Script projects are stored as Drive files
-    await asyncio.to_thread(service.files().delete(fileId=script_id).execute)
+    # Fork: trash, never files.delete. The Drive scope here reaches every
+    # script the user owns, so a wrong id must stay recoverable.
+    trashed = await asyncio.to_thread(
+        service.files()
+        .update(
+            fileId=script_id,
+            body={"trashed": True},
+            fields="id, name, trashed",
+            supportsAllDrives=True,
+        )
+        .execute
+    )
 
-    logger.info(f"[delete_script_project] Deleted script {script_id}")
-    return f"Deleted Apps Script project: {script_id}"
+    logger.info(f"[delete_script_project] Trashed script {script_id}")
+    return (
+        f"Moved Apps Script project '{trashed.get('name', script_id)}' "
+        f"({script_id}) to Drive trash. Restore it with "
+        f'manage_drive_trash(action="restore", file_ids=["{script_id}"]) within 30 days.'
+    )
 
 
 @server.tool(
@@ -1003,7 +1017,7 @@ async def manage_script_project(
 
     Actions:
         - "create": Create a project. Requires title; parent_id is optional.
-        - "delete": Permanently delete a project. Requires script_id.
+        - "delete": Move a project to Drive trash (restorable). Requires script_id.
     """
     action = action.lower().strip()
     if action == "create":

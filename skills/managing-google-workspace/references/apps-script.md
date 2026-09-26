@@ -30,7 +30,7 @@ List projects, get a project's metadata and file overview, or retrieve one compl
 | page_token | any | no | | Pagination token (list only) |
 
 ### manage_script_project
-Create or permanently delete a project.
+Create a project, or move one to Drive trash (restore with `manage_drive_trash`).
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
