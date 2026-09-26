@@ -1428,9 +1428,38 @@ async def test_list_script_triggers_execution_error():
 
 @pytest.mark.asyncio
 async def test_delete_script_trigger_by_handler():
-    """Deleting by handler_function passes it through and reports every match."""
+    """Deleting by handler_function passes it through and reports every match.
+
+    Fork: without dry_run=False it only lists the matches and deletes nothing.
+    """
     mock_service = Mock()
     mock_service.projects().getContent().execute.return_value = {"files": []}
+    mock_service.scripts().run().execute.return_value = {
+        "response": {
+            "result": json.dumps(
+                [
+                    {"uniqueId": "abc123", "handlerFunction": "sendDailyReport"},
+                    {"uniqueId": "def456", "handlerFunction": "sendDailyReport"},
+                    {"uniqueId": "zzz999", "handlerFunction": "other"},
+                ]
+            )
+        }
+    }
+    kwargs = dict(
+        service=mock_service,
+        user_google_email="test@example.com",
+        script_id="script123",
+        handler_function="sendDailyReport",
+        deployment_id="deployment123",
+    )
+
+    preview = await _delete_script_trigger_impl(**kwargs)
+
+    assert "Dry run: 2 trigger(s)" in preview and "Nothing was deleted" in preview
+    assert "zzz999" not in preview
+    _, run_kwargs = mock_service.scripts().run.call_args
+    assert run_kwargs["body"]["function"] == "__mcpListTriggers"
+
     mock_service.scripts().run().execute.return_value = {
         "response": {
             "result": json.dumps(
@@ -1441,14 +1470,7 @@ async def test_delete_script_trigger_by_handler():
             )
         }
     }
-
-    result = await _delete_script_trigger_impl(
-        service=mock_service,
-        user_google_email="test@example.com",
-        script_id="script123",
-        handler_function="sendDailyReport",
-        deployment_id="deployment123",
-    )
+    result = await _delete_script_trigger_impl(**kwargs, dry_run=False)
 
     assert "Deleted 2 trigger" in result
     assert "abc123" in result and "def456" in result

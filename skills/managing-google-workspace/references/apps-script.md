@@ -158,8 +158,9 @@ List or delete the current user's installable triggers on a project. The Apps Sc
 | handler_function | any | no | | Delete every trigger calling this function (delete only) |
 | dev_mode | boolean | no | true | Latest saved code; Google restricts development mode to the project owner |
 | deployment_id | any | no | | API Executable deployment; omit to auto-select the highest version |
+| dry_run | boolean | no | true | With `handler_function` and no `trigger_id`, only list the matches. Set false to delete |
 
-For `delete`, provide `trigger_id` and/or `handler_function` (at least one); when both are given, a trigger must match both to be deleted. Run `action="list"` first to find a trigger's unique ID.
+For `delete`, provide `trigger_id` and/or `handler_function` (at least one); when both are given, a trigger must match both to be deleted. Run `action="list"` first to find a trigger's unique ID. Deleting by `handler_function` alone previews the matches until `dry_run=false`.
 
 ---
 

@@ -1840,6 +1840,7 @@ async def manage_script_trigger(
     handler_function: Optional[str] = None,
     dev_mode: bool = True,
     deployment_id: Optional[str] = None,
+    dry_run: bool = True,
 ) -> str:
     """
     List or delete the current user's installable triggers on a script project.
@@ -1858,7 +1859,8 @@ async def manage_script_trigger(
           removes one trigger; handler_function alone removes EVERY trigger
           calling that function; both together remove the trigger only if its
           handler also matches. At least one is required; run "list" first to
-          find a trigger's unique ID.
+          find a trigger's unique ID. Deleting by handler_function alone only
+          previews the matches until dry_run=False.
 
     Args:
         service: Injected Google API service client
@@ -1873,6 +1875,8 @@ async def manage_script_trigger(
             already exist in the deployed version.
         deployment_id: Optional API Executable deployment ID. When omitted, the
             highest versioned API Executable deployment is used.
+        dry_run: With handler_function and no trigger_id, list what would be
+            deleted and delete nothing (default True). Set False to delete.
 
     Returns:
         str: Formatted list of triggers, or a summary of the trigger(s) deleted.
@@ -1891,6 +1895,7 @@ async def manage_script_trigger(
             handler_function,
             dev_mode,
             deployment_id,
+            dry_run,
         )
     else:
         raise UserInputError(f"Invalid action '{action}'. Must be 'list' or 'delete'.")
@@ -1904,10 +1909,24 @@ async def _delete_script_trigger_impl(
     handler_function: Optional[str] = None,
     dev_mode: bool = True,
     deployment_id: Optional[str] = None,
+    dry_run: bool = True,
 ) -> str:
     """Internal implementation for manage_script_trigger delete."""
     if not trigger_id and not handler_function:
         raise UserInputError("Provide trigger_id or handler_function (or both).")
+
+    # Fork: a handler name can match many triggers, so preview before deleting.
+    if not trigger_id and dry_run:
+        triggers = await _run_trigger_admin(
+            service, script_id, "__mcpListTriggers", [], dev_mode, deployment_id
+        )
+        matches = [t for t in triggers if t.get("handlerFunction") == handler_function]
+        output = [
+            f"Dry run: {len(matches)} trigger(s) on script {script_id} call "
+            f"{handler_function}. Nothing was deleted; pass dry_run=False to delete."
+        ]
+        output += [f"- unique ID: {t.get('uniqueId', 'Unknown')}" for t in matches]
+        return "\n".join(output)
 
     logger.info(
         f"[delete_script_trigger] Email: {user_google_email}, ID: {script_id}, "
