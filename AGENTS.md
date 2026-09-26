@@ -110,8 +110,9 @@ and HTTP. That takes FastMCP 4, built on MCP SDK 2. The mcp 1.x line stops at
   `input_schema`). The camelCase reads go through a FastMCP bridge that warns
   and is due for removal. camelCase keywords on construction stay valid.
 - Verify a protocol change with a real client over stdio: FastMCP 4
-  `Client(mode="legacy")`, `mode="2026-07-28"`, `mode="auto"`, and an old
-  `mcp==1.28.1` client. Expect 50 tools for `--tools gmail` without a service
+  `Client(mode="legacy")`, `mode="2026-07-28"`, `mode="auto"`, an old
+  `mcp==1.28.1` client, and the TypeScript `@modelcontextprotocol/sdk@1.25`
+  client, which MCP Router 0.6.2 bundles. Expect 50 tools for `--tools gmail` without a service
   account, `isError` for a missing argument, -32602 for an unknown tool, and
   every stdout line valid JSON. The pinned mode skips `server/discover`, so it
   shows no server instructions; legacy and auto do.
@@ -133,10 +134,9 @@ Python, uv. `uv sync --frozen --group test`, `uv run --frozen pytest`,
 `uv run --frozen ruff check .`. Always `--frozen`: a plain `uv sync` rewrites
 uv.lock into a newer format and produces a 2000-line diff against upstream.
 
-`ruff check` is only half of CI. The Ruff workflow also runs
-`uvx ruff@0.15.22 format --check`, and its autofix job is skipped on a direct
-push to main, so a formatting slip fails the run with nothing to repair it.
-Before pushing, run both at the pinned version:
+`ruff check` alone misses formatting. Upstream's CI runs
+`uvx ruff@0.15.22 format --check` too, so a formatting slip here also breaks
+the next upstream PR. Before pushing, run both at the pinned version:
 
     uvx ruff@0.15.22 check
     uvx ruff@0.15.22 format --check

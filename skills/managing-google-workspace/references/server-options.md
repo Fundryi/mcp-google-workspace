@@ -11,6 +11,8 @@ These mirror the MCP server's own flags. **Default setup**: use stdio transport 
 | `--transport streamable-http` | **Recommended.** Full MCP spec compliance, OAuth 2.1 |
 | _(default: stdio)_ | Legacy fallback for clients with incomplete MCP support |
 
+Both transports serve MCP 2026-07-28 (`server/discover`, no `initialize`) and the older handshake revisions 2024-11-05 to 2025-11-25 (this fork, FastMCP 4).
+
 ## Auth modes
 
 | Mode | Flag / Env | Use case |

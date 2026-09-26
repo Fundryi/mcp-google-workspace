@@ -166,7 +166,7 @@ Each page lists every tool with its tier, parameters, required scopes, and examp
 
 ## About this fork
 
-This is a private fork of [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp). It adds the Gmail management tools that upstream does not ship. Everything else is upstream, apart from a few small callability edits: a server instructions block (writes are live unless `--read-only`; params are snake_case, `file_url` is accepted for `create_drive_file`'s `fileUrl`), `Args:` sections on the docs and comment tools so every parameter carries a description, and a final `Capped at N` line on list tools that stopped at their cap (search_docs, list_docs_in_folder, comments, revisions, activity, Gmail history).
+This is an independent fork of [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp). It adds the Gmail management tools that upstream does not ship. Everything else is upstream, apart from a few small callability edits: a server instructions block (writes are live unless `--read-only`; params are snake_case, `file_url` is accepted for `create_drive_file`'s `fileUrl`), `Args:` sections on the docs and comment tools so every parameter carries a description, and a final `Capped at N` line on list tools that stopped at their cap (search_docs, list_docs_in_folder, comments, revisions, activity, Gmail history).
 
 Added tools live in `gmail/gmail_extended_tools.py` (41 tools):
 
@@ -216,6 +216,8 @@ VS Code does the first step for you. Open `mcp-google-workspace.code-workspace` 
 - One token refresh per account at a time. Parallel calls on the same account wait for the first refresh and reuse it.
 - Credential files are written to a temp file and renamed, so a crash mid-write cannot truncate a token file.
 - Sign-in works without a browser on the server. `start_google_auth` prints a URL. Open it on any machine and accept. The browser then lands on a `localhost` page that does not load. Copy that address and pass it to `complete_google_auth` (in the chat, or through `scripts/auth.py`, which asks for one paste per account). The server picks this mode by itself when it finds no browser: `SSH_CONNECTION` set, Linux without `DISPLAY`, or `WORKSPACE_MCP_NO_BROWSER=1`. On a desktop the tab still opens as before. A pasted link works once and for 10 minutes; the allowlist applies to it like to any other sign-in. `WORKSPACE_MCP_PORT` now beats a stray `PORT` variable for the callback port.
+- API keys stay out of error text. A failed Google call used to return the full request URL to the caller, and `search_custom` puts `GOOGLE_PSE_API_KEY` in that URL. The query string now reads `?<query-redacted>`.
+- Windows paths work in `file_path`. The Drive import tools rejected `C:\...` paths because the drive letter looked like a URL scheme.
 
 ### MCP protocol
 
@@ -228,12 +230,12 @@ For an agent calling the tools:
 
 - Call `list_gmail_accounts` first. It names every stored account and what it can do.
 - A failed call is a normal tool result with `isError: true` and a plain text body. Examples: `API error in search_gmail_messages: <HttpError 400 ...>`, or a list of missing or invalid arguments. URL query strings in that text read `?<query-redacted>`.
-- An unknown tool name is a JSON-RPC error `-32602` (`Unknown tool: <name>`). It usually means the tool is not loaded with the current `--tools` or tier.
+- An unknown tool name is a JSON-RPC error `-32602` (`Unknown tool: <name>`). It usually means the tool is not loaded with the current `--tools` or tier. Behind MCP Router the call never reaches this server: the router itself answers `-32600` ("Could not determine server for tool").
 - Every tool carries `readOnlyHint`. `true` means the tool changes nothing, in Google or on disk. Sign-in and attachment downloads say `false` because they write local files.
 
 After a merge, start the server with `--tools gmail` and check that the tool list still has 57 entries with a service account configured, or 50 without one (14 upstream Gmail tools, `start_google_auth`, `complete_google_auth`, and 41 or 34 from this fork). The test `tests/gmail/test_gmail_extended_tools.py` checks the same count.
 
-Upstream v1.27.0 behavior retained by this fork:
+Upstream behavior this fork keeps (since v1.27.0):
 
 | Tool | Behavior |
 |------|----------|
