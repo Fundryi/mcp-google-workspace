@@ -14,6 +14,7 @@ install_startup_warning_filters()
 
 from auth.auth_info_middleware import AuthInfoMiddleware
 from core.camel_case_middleware import CamelCaseArgumentsMiddleware
+from core.unknown_tool_middleware import UnknownToolMiddleware
 from auth.google_auth import (
     handle_auth_callback,
     is_headless,
@@ -406,6 +407,7 @@ server.add_middleware(auth_info_middleware)
 # mirror the Google API field names, mapping them onto the snake_case tool
 # parameters. See https://github.com/taylorwilsdon/google_workspace_mcp/issues/918
 server.add_middleware(CamelCaseArgumentsMiddleware())
+server.add_middleware(UnknownToolMiddleware())
 
 
 def _parse_allowed_redirect_uris(value: Optional[str]) -> Optional[List[str]]:
