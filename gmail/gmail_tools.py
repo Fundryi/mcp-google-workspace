@@ -62,10 +62,13 @@ from auth.scopes import (
     GMAIL_COMPOSE_SCOPE,
     GMAIL_MODIFY_SCOPE,
     GMAIL_LABELS_SCOPE,
+    has_required_scopes,
 )
 from gmail.gmail_helpers import (
+    FILTER_APPLY_DEFAULT_MAX_MESSAGES,
     GMAIL_METADATA_HEADERS,
     RAW_BODY_TRUNCATE_LIMIT,
+    THREAD_REPLY_CONTEXT_FIELDS,
     _analyze_thread_ownership_impl,
     _build_forward_content,
     _derive_reply_all_recipients,
@@ -74,12 +77,16 @@ from gmail.gmail_helpers import (
     _get_send_as_identity_and_signature,
     _get_send_as_signature_html_for_tool,
     _http_error_status,
+    _is_email_reaction,
     _retryable_result_ids,
     _signature_html_to_text,
     _wrap_signature_html,
+    apply_gmail_filter_to_existing,
     build_label_color,
+    format_filter_apply_result,
     html_newlines_to_br,
     html_to_text_preserving_breaks,
+    update_gmail_filter,
 )
 
 logger = logging.getLogger(__name__)
@@ -980,13 +987,9 @@ async def _fetch_thread_reply_context(
     ]
 
     try:
-        request_kwargs = {
-            "userId": "me",
-            "id": thread_id,
-            "format": "full" if include_bodies else "metadata",
-        }
+        request_kwargs = {"userId": "me", "id": thread_id, "format": "full"}
         if not include_bodies:
-            request_kwargs["metadataHeaders"] = header_names
+            request_kwargs["fields"] = THREAD_REPLY_CONTEXT_FIELDS
 
         request = service.users().threads().get(**request_kwargs)
         thread = await asyncio.to_thread(request.execute)
@@ -1032,9 +1035,16 @@ async def _fetch_thread_reply_context(
             context["html_body"] = bodies.get("html", "")
         message_contexts.append(context)
         # Automatic selection only considers actual sent or received messages.
-        # Keep every context above so an explicit In-Reply-To can still resolve
-        # to the exact message the caller selected.
-        if context["message_id"] and "DRAFT" not in labels and "TRASH" not in labels:
+        # Gmail web renders a reaction as a chip on its parent, so a reply
+        # parented on one is hidden from the conversation view. Keep every
+        # context above so an explicit In-Reply-To can still resolve to the
+        # exact message the caller selected.
+        if (
+            context["message_id"]
+            and "DRAFT" not in labels
+            and "TRASH" not in labels
+            and not _is_email_reaction(payload)
+        ):
             eligible_contexts.append(context)
 
     target = None
@@ -4232,33 +4242,42 @@ async def manage_gmail_filter(
     criteria: Optional[JsonDict] = None,
     filter_action: Optional[JsonDict] = None,
     filter_id: Optional[str] = None,
+    dry_run: bool = False,
+    max_messages: int = FILTER_APPLY_DEFAULT_MAX_MESSAGES,
 ) -> str:
     """
-    Manages Gmail filters: create, replace or delete.
+    Manages Gmail filters: create, delete, update, and apply to existing mail.
+    Create and update echo the filter Gmail actually stored, which is not
+    always what was sent.
 
-    Gmail has no filter update, so "replace" creates the new filter first and
-    deletes the old one only after that succeeds. Every result echoes the
-    filter Gmail actually stored, which is not always what was sent.
+    - update: Gmail has no filter update API, so the filter is recreated (new
+      one first, then the old one is deleted) and its ID changes. A passed
+      criteria or filter_action replaces that whole object; omit one to keep
+      the old filter's.
+    - apply: runs a filter's label actions on mail ALREADY in the mailbox
+      (Gmail filters only act on new mail). Only matching messages change,
+      not whole conversations as in the web UI. Use filter_id, or criteria +
+      filter_action for an ad-hoc run. Forwarding is never applied. Use
+      dry_run=true first to see the search query and the match count.
+      Needs the gmail.modify scope in addition to gmail.settings.basic.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
-        action (str): Action to perform - "create", "replace" or "delete".
-        criteria (Optional[Dict[str, Any]]): Filter criteria object (required for create and replace).
-        filter_action (Optional[Dict[str, Any]]): Filter action object (required for create and replace). Named 'filter_action' to avoid shadowing the 'action' parameter.
-        filter_id (Optional[str]): ID of the filter to delete, or to replace.
+        action (str): "create", "delete", "update" or "apply".
+        criteria (Optional[Dict[str, Any]]): Filter criteria object (required for create; optional for update/apply).
+        filter_action (Optional[Dict[str, Any]]): Filter action object (required for create; optional for update/apply). Named 'filter_action' to avoid shadowing the 'action' parameter.
+        filter_id (Optional[str]): ID of the filter (required for delete and update; optional for apply).
+        dry_run (bool): apply only: count matches without changing anything.
+        max_messages (int): apply only: safety cap on messages changed (default 5000).
 
     Returns:
         str: Confirmation with the stored filter, and a note about anything Gmail added by itself.
     """
     action_lower = action.lower().strip()
-    if action_lower in ("create", "replace"):
+    if action_lower == "create":
         if not criteria or not filter_action:
-            raise ValueError(
-                f"criteria and filter_action are required for {action_lower} action"
-            )
-        if action_lower == "replace" and not filter_id:
-            raise ValueError("filter_id is required for replace action")
-        logger.info(f"[manage_gmail_filter] {action_lower.title()} filter")
+            raise ValueError("criteria and filter_action are required for create action")
+        logger.info("[manage_gmail_filter] Creating filter")
         filter_body = {"criteria": criteria, "action": filter_action}
         created_filter = await asyncio.to_thread(
             service.users()
@@ -4267,34 +4286,8 @@ async def manage_gmail_filter(
             .create(userId="me", body=filter_body)
             .execute
         )
-        stale_filter_id = None
-        if action_lower == "replace":
-            # New one exists before the old one goes, so a failure never leaves
-            # the mailbox with no filter at all. Gmail has no atomic swap, so if
-            # the delete fails both filters stay live and the caller has to know.
-            try:
-                await asyncio.to_thread(
-                    service.users()
-                    .settings()
-                    .filters()
-                    .delete(userId="me", id=filter_id)
-                    .execute
-                )
-            except Exception as exc:
-                logger.warning(f"[manage_gmail_filter] Old filter not deleted: {exc}")
-                stale_filter_id = filter_id
         names = await _label_names(service)
-        lines = [
-            f"Filter {'replaced' if action_lower == 'replace' else 'created'} successfully!"
-        ]
-        if action_lower == "replace" and stale_filter_id:
-            lines[0] = "Filter created, but the old one is STILL ACTIVE."
-            lines.append(
-                f"Both filters now match: {stale_filter_id} (old) and "
-                f"{created_filter.get('id', '(unknown)')} (new). Delete the old one."
-            )
-        elif action_lower == "replace":
-            lines.append(f"Deleted old filter: {filter_id}")
+        lines = ["Filter created successfully!"]
         lines += _format_filter(created_filter, names)
         surprises = _filter_action_surprises(
             filter_action, created_filter.get("action", {})
@@ -4321,9 +4314,75 @@ async def manage_gmail_filter(
         return "\n".join(
             ["Filter deleted successfully!"] + _format_filter(filter_details, names)
         )
+    elif action_lower == "update":
+        if not filter_id:
+            raise ValueError("filter_id is required for update action")
+        if not criteria and not filter_action:
+            raise ValueError(
+                "criteria and/or filter_action are required for update action"
+            )
+        logger.info(f"[manage_gmail_filter] Updating filter {filter_id}")
+        created = await update_gmail_filter(
+            service, filter_id, criteria=criteria, filter_action=filter_action
+        )
+        names = await _label_names(service)
+        lines = [
+            "Filter updated successfully (Gmail recreates filters on update).",
+            f"Old filter ID: {filter_id} (deleted)",
+            f"New filter ID: {created.get('id', '(unknown)')}",
+        ]
+        lines += _format_filter(created, names)
+        if filter_action:
+            surprises = _filter_action_surprises(
+                filter_action, created.get("action", {})
+            )
+            if surprises:
+                lines.append("  Note, Gmail changed the action you sent:")
+                lines += [f"    \u2022 {note}" for note in surprises]
+        return "\n".join(lines)
+    elif action_lower == "apply":
+        # Checked here, not in the decorator, so the other actions work with
+        # only gmail.settings.basic.
+        credentials = getattr(getattr(service, "_http", None), "credentials", None)
+        granted = getattr(credentials, "scopes", None)
+        if isinstance(granted, (list, tuple, set, frozenset)) and not (
+            has_required_scopes(granted, [GMAIL_MODIFY_SCOPE])
+        ):
+            raise ToolExecutionError(
+                "apply needs the gmail.modify scope to change existing messages; "
+                "re-authenticate with Gmail modify access."
+            )
+        if max_messages < 1:
+            raise ValueError("max_messages must be at least 1")
+        if filter_id:
+            existing = await asyncio.to_thread(
+                service.users()
+                .settings()
+                .filters()
+                .get(userId="me", id=filter_id)
+                .execute
+            )
+            criteria = existing.get("criteria", {})
+            filter_action = existing.get("action", {})
+        if not criteria or not filter_action:
+            raise ValueError(
+                "apply needs filter_id, or both criteria and filter_action"
+            )
+        logger.info(
+            f"[manage_gmail_filter] Applying filter to existing mail (dry_run={dry_run})"
+        )
+        result = await apply_gmail_filter_to_existing(
+            service,
+            criteria,
+            filter_action,
+            dry_run=dry_run,
+            max_messages=max_messages,
+        )
+        return format_filter_apply_result(result, dry_run)
     else:
         raise ValueError(
-            f"Invalid action '{action_lower}'. Must be 'create', 'replace' or 'delete'."
+            f"Invalid action '{action_lower}'. Must be 'create', 'delete', "
+            "'update' or 'apply'."
         )
 
 

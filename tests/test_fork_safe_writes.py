@@ -97,28 +97,6 @@ def test_filter_surprises_names_what_gmail_added():
     )
 
 
-@pytest.mark.asyncio
-async def test_filter_replace_creates_before_it_deletes():
-    service = Mock()
-    calls = []
-    service.users().settings().filters().create().execute.side_effect = lambda *a, **k: (
-        calls.append("create") or {"id": "new", "criteria": {}, "action": {}}
-    )
-    service.users().settings().filters().delete().execute.side_effect = lambda *a, **k: (
-        calls.append("delete")
-    )
-    result = await _unwrap(gmail.manage_gmail_filter)(
-        service=service,
-        user_google_email="u@example.com",
-        action="replace",
-        filter_id="old",
-        criteria={"from": "a@b.com"},
-        filter_action={"addLabelIds": ["Label_1"]},
-    )
-    assert calls == ["create", "delete"]
-    assert "old" in result
-
-
 # --- Calendar --------------------------------------------------------------
 
 

@@ -190,15 +190,17 @@ List all filters with their criteria and actions.
 | user_google_email | string | yes | | |
 
 ### manage_gmail_filter
-Create, replace or delete a filter. Gmail has no filter update, so `replace` creates the new one first and deletes the old one after. Every result echoes the filter Gmail stored, and names anything Gmail added on its own.
+Create, update, delete, or apply a filter. Gmail has no filter update, so `update` creates the new filter first and deletes the old one after; the filter ID changes, and an omitted `criteria` or `filter_action` keeps the old filter's. Create and update echo the filter Gmail stored, and name anything Gmail added on its own. `apply` runs a filter's label actions on existing mail right away (set `dry_run` true to preview); for a preview-first replay that adds labels only, use `apply_gmail_filter_to_existing_mail`.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
 | user_google_email | string | yes | | |
-| action | string | yes | | "create", "replace" or "delete" |
-| criteria | object | for create/replace | | Filter criteria (see below) |
-| filter_action | object | for create/replace | | Actions to apply (see below) |
-| filter_id | string | for replace/delete | | The filter to swap out, or to remove |
+| action | string | yes | | "create", "update", "delete" or "apply" |
+| criteria | object | for create | | Filter criteria (see below). Optional for update/apply |
+| filter_action | object | for create | | Actions to apply (see below). Optional for update/apply |
+| filter_id | string | for update/delete | | Optional for apply (else pass criteria + filter_action) |
+| dry_run | boolean | no | false | apply only: count matches, change nothing |
+| max_messages | integer | no | 5000 | apply only: cap on messages changed |
 
 **Criteria object keys:** `from`, `to`, `subject`, `query`, `negatedQuery`, `hasAttachment` (bool), `excludeChats` (bool), `size` (int), `sizeComparison` (string).
 
