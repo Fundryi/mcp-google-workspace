@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from threading import Event
 from unittest.mock import Mock, patch
+from urllib.parse import urlsplit
 
 import pytest
 from fastmcp.tools import ToolResult
@@ -348,5 +349,6 @@ async def test_download_url_stateless_mode_ignores_declared_size_of_exports(
 
     text, resource = result.content
     assert "exported to application/pdf" in text.text
-    assert resource.resource.uri.path == "/Notes.pdf"
+    # MCP SDK 2 types the URI as str, SDK 1 as AnyUrl.
+    assert urlsplit(str(resource.resource.uri)).path == "/Notes.pdf"
     assert base64.b64decode(resource.resource.blob) == b"%PDF-1.7"

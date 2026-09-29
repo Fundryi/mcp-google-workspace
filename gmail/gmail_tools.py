@@ -4276,7 +4276,9 @@ async def manage_gmail_filter(
     action_lower = action.lower().strip()
     if action_lower == "create":
         if not criteria or not filter_action:
-            raise ValueError("criteria and filter_action are required for create action")
+            raise ValueError(
+                "criteria and filter_action are required for create action"
+            )
         logger.info("[manage_gmail_filter] Creating filter")
         filter_body = {"criteria": criteria, "action": filter_action}
         created_filter = await asyncio.to_thread(

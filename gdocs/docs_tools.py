@@ -199,10 +199,10 @@ async def search_docs(
             f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
         )
     if next_token:
-        output.append(f"nextPageToken: {next_token}")
         output.append(
             f"Capped at {page_size}; more matches exist. Pass page_token or raise page_size."
         )
+        output.append(f"nextPageToken: {next_token}")
     return flag_incomplete_search("\n".join(output), response)
 
 
@@ -479,10 +479,10 @@ async def list_docs_in_folder(
             f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
         )
     if next_token:
-        out.append(f"nextPageToken: {next_token}")
         out.append(
             f"Capped at {page_size}; more Docs exist. Pass page_token or raise page_size."
         )
+        out.append(f"nextPageToken: {next_token}")
     return "\n".join(out)
 
 
