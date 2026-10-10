@@ -469,7 +469,7 @@ async def get_drive_file_download_url(
     Downloads a Google Drive file and saves it to local disk.
 
     In stdio mode, returns the local file path for direct access.
-    In HTTP mode, returns a temporary download URL (valid for 1 hour).
+    In HTTP mode, returns a temporary download URL (valid for 24 hours).
     In stateless mode (no file storage), returns the file itself as an embedded
     resource, up to WORKSPACE_MCP_STATELESS_INLINE_MAX_BYTES (default 10 MiB,
     and never more than WORKSPACE_MCP_MAX_FILE_BYTES when that is set).
@@ -660,7 +660,7 @@ async def get_drive_file_download_url(
         else:
             download_url = await asyncio.to_thread(get_attachment_url, result.file_id)
             result_lines.append(f"\n📎 Download URL: {download_url}")
-            result_lines.append("\nThe file will expire after 1 hour.")
+            result_lines.append("\nThe file will expire after 24 hours.")
 
         if export_mime_type:
             result_lines.append(

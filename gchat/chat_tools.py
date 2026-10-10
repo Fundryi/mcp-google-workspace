@@ -616,7 +616,7 @@ async def download_chat_attachment(
     Downloads an attachment from a Google Chat message and saves it to local disk.
 
     In stdio mode, returns the local file path for direct access.
-    In HTTP mode, returns a temporary download URL (valid for 1 hour).
+    In HTTP mode, returns a temporary download URL (valid for 24 hours).
 
     Args:
         message_id: The message resource name (e.g. spaces/X/messages/Y).
@@ -737,7 +737,7 @@ async def download_chat_attachment(
     else:
         download_url = await asyncio.to_thread(get_attachment_url, result.file_id)
         result_lines.append(f"\nDownload URL: {download_url}")
-        result_lines.append("\nThe file will expire after 1 hour.")
+        result_lines.append("\nThe file will expire after 24 hours.")
 
     logger.info(
         f"[download_chat_attachment] Saved {size_kb:.1f} KB attachment to {result.path}"
