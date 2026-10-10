@@ -23,6 +23,7 @@ from email.utils import formataddr
 
 import httpx
 from fastmcp.exceptions import ToolError as ToolExecutionError
+from googleapiclient.http import MediaInMemoryUpload
 from mcp.types import ToolAnnotations
 
 from pydantic import Field
@@ -1083,6 +1084,43 @@ async def _fetch_thread_message_ids(service, thread_id: str) -> List[str]:
 
 
 MAX_EMAIL_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25 MB Gmail attachment limit
+
+# mediaUpload.maxSize of drafts.create and messages.send in the Gmail discovery doc.
+GMAIL_UPLOAD_MAX_BYTES = 36_700_160
+# Resumable chunks must be a multiple of 256 KiB.
+GMAIL_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _gmail_message_kwargs(
+    raw_message: str, message_fields: Dict[str, Any], draft: bool = False
+) -> Dict[str, Any]:
+    """Build the kwargs for drafts().create or messages().send.
+
+    The client's socket timeout (30 s) covers the whole request body, so one
+    large JSON request fails on a slow uplink. A message larger than one chunk
+    goes through Gmail's resumable upload instead, where each chunk gets its own
+    timeout. Above the upload cap the JSON route is kept, as before.
+    """
+    media = None
+    if len(raw_message) * 3 // 4 > GMAIL_UPLOAD_CHUNK_BYTES:
+        data = base64.urlsafe_b64decode(raw_message)
+        if len(data) <= GMAIL_UPLOAD_MAX_BYTES:
+            media = MediaInMemoryUpload(
+                data,
+                mimetype="message/rfc822",
+                chunksize=GMAIL_UPLOAD_CHUNK_BYTES,
+                resumable=True,
+            )
+
+    message = dict(message_fields)
+    if media is None:
+        message["raw"] = raw_message
+    kwargs: Dict[str, Any] = {"userId": "me"}
+    if message:
+        kwargs["body"] = {"message": message} if draft else message
+    if media is not None:
+        kwargs["media_body"] = media
+    return kwargs
 
 
 def _redact_url(url: str) -> str:
@@ -2927,15 +2965,18 @@ async def send_gmail_message(
             f"{details}"
         )
 
-    send_body = {"raw": raw_message}
+    send_fields: Dict[str, Any] = {}
 
     # Associate with thread if provided
     if thread_id_final:
-        send_body["threadId"] = thread_id_final
+        send_fields["threadId"] = thread_id_final
 
     # Send the message
     sent_message = await asyncio.to_thread(
-        service.users().messages().send(userId="me", body=send_body).execute,
+        service.users()
+        .messages()
+        .send(**_gmail_message_kwargs(raw_message, send_fields))
+        .execute,
         num_retries=GOOGLE_API_WRITE_RETRIES,
     )
     message_id = sent_message.get("id")
@@ -3078,11 +3119,12 @@ async def _forward_gmail_message_impl(
             f"{attached_count}/{len(attachments_to_send)} attached.{details}"
         )
 
-    send_body = {"raw": raw_message}
-
     # Send the message
     sent_message = await asyncio.to_thread(
-        service.users().messages().send(userId="me", body=send_body).execute,
+        service.users()
+        .messages()
+        .send(**_gmail_message_kwargs(raw_message, {}))
+        .execute,
         num_retries=GOOGLE_API_WRITE_RETRIES,
     )
     sent_message_id = sent_message.get("id")
@@ -3375,13 +3417,16 @@ async def draft_gmail_message(
     # RFC-compliant In-Reply-To/References headers to add a draft to a thread.
     # If we could not derive the headers, fall back to an unthreaded draft
     # instead of sending an invalid thread request.
-    draft_body = {"message": {"raw": raw_message}}
+    draft_fields: Dict[str, Any] = {}
     if thread_id and in_reply_to and references:
-        draft_body["message"]["threadId"] = thread_id
+        draft_fields["threadId"] = thread_id
 
     # Create the draft
     created_draft = await asyncio.to_thread(
-        service.users().drafts().create(userId="me", body=draft_body).execute,
+        service.users()
+        .drafts()
+        .create(**_gmail_message_kwargs(raw_message, draft_fields, draft=True))
+        .execute,
         num_retries=GOOGLE_API_WRITE_RETRIES,
     )
     draft_id = created_draft.get("id")
