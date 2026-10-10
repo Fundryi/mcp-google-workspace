@@ -35,6 +35,7 @@ from core.file_limits import (
     ensure_within_file_size_limit,
     get_stateless_inline_max_bytes,
 )
+from core.gcs_attachment_storage import gcs_files_enabled
 from core.utils import (
     GOOGLE_API_WRITE_RETRIES,
     IMAGE_MIME_TYPES,
@@ -87,6 +88,7 @@ from gdrive.drive_helpers import (
     has_explicit_trashed_clause,
     initiate_resumable_upload_session,
     native_replace_format_map,
+    normalize_drive_query_v2_compat,
     reject_sources_with_upload_url,
     resolve_drive_item,
     resolve_file_type_mime,
@@ -210,13 +212,15 @@ async def search_drive_files(
     is_structured_query = any(pattern.search(query) for pattern in DRIVE_QUERY_PATTERNS)
 
     if is_structured_query:
-        final_query = query
-        logger.debug(
-            f"[search_drive_files] Using structured query as-is: '{final_query}'"
-        )
+        final_query = normalize_drive_query_v2_compat(query)
+        if final_query != query:
+            logger.info(
+                "[search_drive_files] Normalized v2 query field names to v3 equivalents"
+            )
+        logger.debug(f"[search_drive_files] Using structured query: '{final_query}'")
     else:
         # For free text queries, wrap in fullText contains
-        escaped_query = query.replace("'", "\\'")
+        escaped_query = query.replace("\\", "\\\\").replace("'", "\\'")
         final_query = f"fullText contains '{escaped_query}'"
         logger.debug(
             f"[search_drive_files] Reformatting free text query '{query}' to '{final_query}'"
@@ -558,7 +562,12 @@ async def get_drive_file_download_url(
 
     # Stateless mode has no attachment storage to hand out a URL from, so the
     # file itself goes back as an embedded resource, up to inline_max_bytes.
-    inline_max_bytes = get_stateless_inline_max_bytes() if is_stateless_mode() else None
+    # GCS staging supplies that storage, so the file goes there instead.
+    inline_max_bytes = (
+        get_stateless_inline_max_bytes()
+        if is_stateless_mode() and not gcs_files_enabled()
+        else None
+    )
     if inline_max_bytes == 0:
         return _stateless_inline_disabled_message(file_name, file_id, output_mime_type)
     # Drive's declared size is the download size only for binary files; an
@@ -649,7 +658,7 @@ async def get_drive_file_download_url(
                 "\nThe file has been saved to disk and can be accessed directly via the file path."
             )
         else:
-            download_url = get_attachment_url(result.file_id)
+            download_url = await asyncio.to_thread(get_attachment_url, result.file_id)
             result_lines.append(f"\n📎 Download URL: {download_url}")
             result_lines.append("\nThe file will expire after 1 hour.")
 
@@ -2828,19 +2837,9 @@ async def set_drive_file_permissions(
     # Handle link sharing via permissions API
     if link_sharing is not None:
         current_permissions = await asyncio.to_thread(
-            service.permissions()
-            .list(
-                fileId=file_id,
-                supportsAllDrives=True,
-                fields="permissions(id, type, role)",
-            )
-            .execute
+            list_all_permissions, service, file_id
         )
-        anyone_perms = [
-            p
-            for p in current_permissions.get("permissions", [])
-            if p.get("type") == "anyone"
-        ]
+        anyone_perms = [p for p in current_permissions if p.get("type") == "anyone"]
 
         if link_sharing == "off":
             if anyone_perms:

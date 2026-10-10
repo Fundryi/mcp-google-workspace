@@ -95,8 +95,9 @@ One command serves MCP 2026-07-28 (stateless, `server/discover`, no
 and HTTP. That takes FastMCP 4, built on MCP SDK 2. The mcp 1.x line stops at
 2025-11-25, its newest release included.
 
-- Keep `fastmcp>=4` in pyproject.toml. Upstream still pins 3.x, so a merge
-  conflict there resolves to ours. Re-lock with `uvx uv@0.5.31 lock`, which
+- Keep `fastmcp>=4` in pyproject.toml. Upstream moved to 4.x in v2.0, so
+  take upstream's pyproject.toml and uv.lock on a merge unless we add a
+  dependency of our own. Re-lock with `uvx uv@0.5.31 lock`, which
   writes the lock format upstream uses. A current uv rewrites every line. The
   header must keep `revision = 1` on line 2: 0.5.31 keeps that line but does
   not add it back once it is gone.

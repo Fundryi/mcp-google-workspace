@@ -96,12 +96,12 @@ Send an email. Supports new messages, replies, HTML, attachments, CC/BCC, and Se
 - **Base64 content**: `{"content": "base64data", "filename": "doc.pdf"}` -- optionally add `"mime_type"` (must be standard base64, not urlsafe)
 
 ### draft_gmail_message
-Create a draft. Same capabilities as send but with additional signature/quoting options.
+Create a draft. Same capabilities as send but with additional signature/quoting options. Pass `forward_message_id` to save a forward for review instead of sending it.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
-| subject | string | yes | | |
-| body | string | yes | | |
+| subject | string | unless forwarding | | Forwarding defaults to "Fwd: <original subject>" |
+| body | string | unless forwarding | | When forwarding, an optional note above the quoted original |
 | body_format | string | no | "plain" | "plain" or "html" |
 | user_google_email | string | yes | | |
 | to | string | no | | Can be empty for drafts |
@@ -115,6 +115,8 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 | attachments | array | no | | Same format as send |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
+| forward_message_id | string | no | | Gmail message ID to forward as a draft |
+| include_forwarded_attachments | boolean | no | true | Carry over the original attachments; ignored unless forwarding |
 
 Operational Gmail settings errors such as rate limits abort draft creation instead of silently falling back to a potentially unintended sender.
 

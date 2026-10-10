@@ -41,6 +41,7 @@ from core.file_limits import (
     ensure_within_file_size_limit,
     get_max_file_bytes,
 )
+from core.gcs_attachment_storage import gcs_files_enabled
 from core.config import (
     get_transport_mode,
     WORKSPACE_EXTERNAL_URL,
@@ -79,6 +80,7 @@ from gmail.gmail_helpers import (
     _get_send_as_signature_html_for_tool,
     _http_error_status,
     _is_email_reaction,
+    _new_attachment_id,
     _retryable_result_ids,
     _signature_html_to_text,
     _wrap_signature_html,
@@ -375,9 +377,11 @@ async def _export_full_message(
     declared_size: Optional[int] = None,
 ) -> str:
     """
-    Return a message's complete, untruncated content: saved to local storage and
+    Return a message's complete, untruncated content: saved to storage and
     referenced by download URL (HTTP transport) or file path (stdio transport), or —
-    in stateless mode, where there is no storage — inlined in the response.
+    in stateless mode without GCS staging, where there is no storage — inlined in
+    the response. With a GCS bucket configured, stateless mode also gets a signed
+    download URL, since the bucket is not instance-local.
 
     Whenever a file is written the body is kept out of the returned string, which is
     the point of the export: large messages are handed off out-of-band instead of
@@ -486,7 +490,12 @@ async def _export_full_message(
     # Stateless deployments have no persistent storage to hand a file reference off
     # from, but the guarantee callers actually want is "complete and untruncated".
     # Inline delivery satisfies that; it only costs model context.
-    stateless = is_stateless_mode()
+    #
+    # GCS staging is the exception: the bucket is not instance-local, so a
+    # stateless deployment that configures one can hand back a signed URL after
+    # all and keep the body out of the model context. Only fall back to inlining
+    # when stateless mode has no staging available.
+    stateless = is_stateless_mode() and not gcs_files_enabled()
 
     size_bytes = len(content_bytes)
     size_kb = size_bytes / 1024
@@ -543,7 +552,8 @@ async def _export_full_message(
             "from the file path (its content is NOT included above)."
         )
     else:
-        result_lines.append(f"\n📎 Download URL: {get_attachment_url(saved.file_id)}")
+        download_url = await asyncio.to_thread(get_attachment_url, saved.file_id)
+        result_lines.append(f"\n📎 Download URL: {download_url}")
         result_lines.append(
             "\nFetch the full message from the URL above (content is NOT included "
             "in this response). The file will expire after 1 hour."
@@ -1096,7 +1106,7 @@ def _gmail_message_kwargs(
 ) -> Dict[str, Any]:
     """Build the kwargs for drafts().create or messages().send.
 
-    The client's socket timeout (30 s) covers the whole request body, so one
+    The client socket timeout (60 s by default) covers the whole request body, so one
     large JSON request fails on a slow uplink. A message larger than one chunk
     goes through Gmail's resumable upload instead, where each chunk gets its own
     timeout. Above the upload cap the JSON route is kept, as before.
@@ -1535,11 +1545,14 @@ def _prepare_gmail_message(
                     f"filename_len={len(safe_filename)} ({len(file_data)} bytes)"
                 )
             else:
+                attachment_id = _new_attachment_id()
                 message.add_attachment(
                     file_data,
                     maintype=main_type,
                     subtype=sub_type,
                     filename=safe_filename,
+                    cid=f"<{attachment_id}>",
+                    headers=[f"X-Attachment-Id: {attachment_id}"],
                 )
                 logger.info(
                     f"Attached file: filename_len={len(safe_filename)} "
@@ -1907,12 +1920,12 @@ async def get_gmail_message_content(
         bool,
         Field(
             description=(
-                "When True, return the COMPLETE untruncated message: saved to local "
+                "When True, return the COMPLETE untruncated message: saved to "
                 "storage and referenced by download URL/file path instead of the body "
-                "text, or inlined in the response when the server has no file storage "
-                "(stateless mode). Use for messages large enough to hit the truncation "
-                "limit, or when byte-exact fidelity is needed (pair with "
-                "body_format='raw' for a .eml export)."
+                "text. In stateless mode without GCS staging, the body is returned "
+                "inline; with GCS staging, a signed download URL is returned. Use for "
+                "messages large enough to hit the truncation limit, or when byte-exact "
+                "fidelity is needed (pair with body_format='raw' for a .eml export)."
             ),
         ),
     ] = False,
@@ -1922,11 +1935,12 @@ async def get_gmail_message_content(
     Retrieves the full content (subject, sender, recipients, body) of a specific Gmail message.
 
     Bodies are returned inline and truncated at 20,000 characters. Set full=True to
-    get the complete, untruncated message instead: it is exported to disk and the
+    get the complete, untruncated message instead: it is exported to storage and the
     response carries a short-lived download URL (HTTP transport) or file path (stdio
     transport) rather than the body, so large messages never stream through the model
-    context. Stateless deployments have no file storage, so there full=True returns the
-    untruncated body inline.
+    context. Stateless deployments without GCS staging have no storage, so there
+    full=True returns the untruncated body inline; with GCS staging configured it
+    returns a signed download URL like any other HTTP deployment.
 
     Args:
         message_id (str): The unique ID of the Gmail message to retrieve.
@@ -1936,21 +1950,22 @@ async def get_gmail_message_content(
             "text" (default) returns plaintext (HTML converted to text as fallback).
             "html" returns the raw HTML body as-is without conversion.
             "raw" fetches the full raw MIME message and returns the base64url-decoded content.
-        full (bool): When True, write the untruncated message to local storage and
+        full (bool): When True, write the untruncated message to storage and
             return its URL/path instead of the body. body_format selects the exported
             file type: "raw" saves the byte-exact RFC 5322 message as .eml, "html"
             saves the raw HTML body, "text" saves the plaintext body. The "html"/"text"
             exports decode as UTF-8 and drop undecodable bytes, so prefer "raw" when
-            byte-exact fidelity matters. In stateless mode there is no storage to write
-            to, so the untruncated content is returned inline instead.
+            byte-exact fidelity matters. In stateless mode without GCS staging there is
+            no storage to write to, so the untruncated content is returned inline
+            instead; with GCS staging it is saved and returned as a signed URL.
         format (Literal["full", "metadata"]): Message format. "full" (default) includes
             the body and attachments, "metadata" only headers.
 
     Returns:
         str: The message details including subject, sender, date, Message-ID, recipients
             (To, Cc), and body content — or, when full=True, the saved file's download
-            URL or path in place of the body (the untruncated body itself in stateless
-            mode).
+            URL or path in place of the body (inline only in stateless mode without
+            GCS staging).
     """
     logger.info(
         f"[get_gmail_message_content] Invoked. Message ID: '{message_id}', "
@@ -2311,9 +2326,9 @@ async def get_gmail_attachment_content(
             standard (not URL-safe) base64. Default False preserves the
             existing behavior and response size.
         attachment_index (Optional[int]): Zero-based attachment position from
-            the message-content response. When the cap is enabled, this lets
-            the server safely resolve Gmail's refreshed attachment IDs against
-            current metadata before downloading.
+            the message-content response. Lets the server resolve Gmail's
+            refreshed attachment IDs against current metadata before every
+            download, selecting the current attachment ID, filename and MIME type.
 
     Returns:
         str: Attachment metadata with either a local file path or download URL,
@@ -2332,7 +2347,7 @@ async def get_gmail_attachment_content(
     declared_size = None
     download_attachment_id = attachment_id
     max_file_bytes = get_max_file_bytes()
-    if max_file_bytes is not None:
+    if max_file_bytes is not None or attachment_index is not None:
         try:
             message_full = await asyncio.to_thread(
                 service.users()
@@ -2379,7 +2394,7 @@ async def get_gmail_attachment_content(
         # metadata projection could not resolve this attachment (for example,
         # because it is nested deeper than the fields mask), fail closed before
         # requesting data that may exceed the configured cap.
-        if declared_size is None:
+        if max_file_bytes is not None and declared_size is None:
             return (
                 "Error: Could not verify the attachment size before download while "
                 "WORKSPACE_MCP_MAX_FILE_BYTES is configured. Fetch the message again "
@@ -2436,10 +2451,10 @@ async def get_gmail_attachment_content(
         base64_data = ""
         return str(e)
 
-    # Check if we're in stateless mode (can't save files)
+    # Stateless mode has no file storage unless GCS staging is configured.
     from auth.oauth_config import is_stateless_mode
 
-    if is_stateless_mode():
+    if is_stateless_mode() and not gcs_files_enabled():
         result_lines = [
             "Attachment downloaded successfully!",
             f"Message ID: {message_id}",
@@ -2508,9 +2523,12 @@ async def get_gmail_attachment_content(
                     f"Could not fetch attachment metadata for {attachment_id}, using defaults"
                 )
 
-        # Save attachment to local disk
-        result = storage.save_attachment(
-            base64_data=base64_data, filename=filename, mime_type=mime_type
+        # The GCS backend uploads over the network, so keep it off the event loop.
+        result = await asyncio.to_thread(
+            storage.save_attachment,
+            base64_data=base64_data,
+            filename=filename,
+            mime_type=mime_type,
         )
         saved_filename = Path(result.path).name
 
@@ -2528,7 +2546,7 @@ async def get_gmail_attachment_content(
                 "\nThe file has been saved to disk and can be accessed directly via the file path."
             )
         else:
-            download_url = get_attachment_url(result.file_id)
+            download_url = await asyncio.to_thread(get_attachment_url, result.file_id)
             result_lines.append(f"\n📎 Download URL: {download_url}")
             result_lines.append("\nThe file will expire after 1 hour.")
 
@@ -2848,6 +2866,7 @@ async def send_gmail_message(
             forward_message=body,
             forward_message_format=body_format,
             include_attachments=include_forwarded_attachments,
+            attachments=attachments,
             cc=cc,
             bcc=bcc,
             from_name=from_name,
@@ -2996,7 +3015,7 @@ async def send_gmail_message(
 async def _forward_gmail_message_impl(
     service,
     message_id: str,
-    to: str,
+    to: Optional[str],
     subject: Optional[str] = None,
     forward_message: Optional[str] = None,
     forward_message_format: Literal["plain", "html"] = "plain",
@@ -3006,11 +3025,13 @@ async def _forward_gmail_message_impl(
     from_name: Optional[str] = None,
     from_email: Optional[str] = None,
     user_google_email: str = "",
+    as_draft: bool = False,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    """Build and send a forward of an existing Gmail message.
+    """Build a forward of an existing Gmail message and send it or save it as a draft.
 
-    Shared by send_gmail_message's forward path. An explicit ``subject`` overrides
-    the auto-derived 'Fwd: <original subject>'.
+    Shared by the forward paths of send_gmail_message and draft_gmail_message. An
+    explicit ``subject`` overrides the auto-derived 'Fwd: <original subject>'.
     """
     # Fetch the original message with full payload
     original_message = await asyncio.to_thread(
@@ -3100,6 +3121,8 @@ async def _forward_gmail_message_impl(
                 + ", ".join(failed_attachments)
             )
 
+    attachments_to_send.extend(await _resolve_url_attachments(attachments) or [])
+
     # Prepare and send the message
     sender_email = from_email or user_google_email
     raw_message, _, attached_count, attachment_errors = _prepare_gmail_message(
@@ -3122,6 +3145,22 @@ async def _forward_gmail_message_impl(
             f"{attached_count}/{len(attachments_to_send)} attached.{details}"
         )
 
+    attachment_info = (
+        _format_attachment_result(attached_count, len(attachments_to_send))
+        if attachments_to_send
+        else ""
+    )
+    if as_draft:
+        created_draft = await asyncio.to_thread(
+            service.users()
+            .drafts()
+            .create(**_gmail_message_kwargs(raw_message, {}, draft=True))
+            .execute,
+            num_retries=GOOGLE_API_WRITE_RETRIES,
+        )
+        draft_id = created_draft.get("id")
+        return f"Forward draft created{attachment_info}! Draft ID: {draft_id}"
+
     # Send the message
     sent_message = await asyncio.to_thread(
         service.users()
@@ -3131,12 +3170,6 @@ async def _forward_gmail_message_impl(
         num_retries=GOOGLE_API_WRITE_RETRIES,
     )
     sent_message_id = sent_message.get("id")
-
-    attachment_info = (
-        _format_attachment_result(attached_count, len(attachments_to_send))
-        if attachments_to_send
-        else ""
-    )
     return f"Email forwarded{attachment_info}! Message ID: {sent_message_id}"
 
 
@@ -3154,14 +3187,36 @@ async def _forward_gmail_message_impl(
 async def draft_gmail_message(
     service,
     user_google_email: str,
-    subject: Annotated[str, Field(description="Email subject.")],
-    body: Annotated[str, Field(description="Email body (plain text).")],
+    subject: Annotated[
+        Optional[str],
+        Field(
+            description="Email subject. Required unless forwarding (then defaults to 'Fwd: <original subject>').",
+        ),
+    ] = None,
+    body: Annotated[
+        Optional[str],
+        Field(
+            description="Email body. Required unless forwarding, where it becomes an optional note prepended above the quoted original.",
+        ),
+    ] = None,
     body_format: Annotated[
         Literal["plain", "html"],
         Field(
             description="Email body format. Use 'plain' for plaintext or 'html' for HTML content.",
         ),
     ] = "plain",
+    forward_message_id: Annotated[
+        Optional[str],
+        Field(
+            description="Set to a Gmail message ID to save a forward of that message as a draft for review. The original subject, body, and (optionally) attachments are carried over; 'body' becomes an optional note prepended to the forward.",
+        ),
+    ] = None,
+    include_forwarded_attachments: Annotated[
+        bool,
+        Field(
+            description="When forwarding, whether to include the original message's attachments. Ignored unless forward_message_id is set.",
+        ),
+    ] = True,
     to: Annotated[
         Optional[str],
         Field(
@@ -3224,8 +3279,14 @@ async def draft_gmail_message(
     ] = False,
 ) -> str:
     """
-    Creates a draft email in the user's Gmail account. Supports both new drafts and reply drafts with optional attachments.
-    Supports Gmail's "Send As" feature to draft from configured alias addresses.
+    Creates a draft email in the user's Gmail account. Supports new, reply, and forward
+    drafts with optional attachments. Supports Gmail's "Send As" feature to draft from
+    configured alias addresses.
+
+    To save a forward as a draft for review, pass forward_message_id. The original
+    subject, body (quoted with a "Forwarded message" header), and attachments are
+    carried over. In forward mode, body (if any) is prepended as a note, subject is
+    optional, and threading, reply, and signature options do not apply.
 
     SCHEDULED SEND IS NOT AVAILABLE. Gmail's REST API exposes no send-time
     parameter; the Schedule send feature is web-UI only, and a message cannot be
@@ -3238,9 +3299,11 @@ async def draft_gmail_message(
 
     Args:
         user_google_email (str): The user's Google email address. Required for authentication.
-        subject (str): Email subject.
-        body (str): Email body (plain text).
+        subject (Optional[str]): Email subject. Required unless forwarding (then defaults to 'Fwd: <original subject>').
+        body (Optional[str]): Email body. Required unless forwarding (then an optional prepended note).
         body_format (Literal['plain', 'html']): Email body format. Defaults to 'plain'.
+        forward_message_id (Optional[str]): Gmail message ID to forward. When set, the draft is a forward of that message.
+        include_forwarded_attachments (bool): Whether to carry over the original attachments when forwarding. Defaults to True.
         to (Optional[str]): Optional recipient email address. Can be left empty for drafts.
         cc (Optional[str]): Optional CC email address.
         bcc (Optional[str]): Optional BCC email address.
@@ -3326,7 +3389,46 @@ async def draft_gmail_message(
             to="user@example.com",
             thread_id="thread_123"
         )
+
+        # Save a forward (with the original attachments) as a draft for review
+        draft_gmail_message(
+            to="user@example.com",
+            forward_message_id="abc123",
+            body="FYI - see below."
+        )
     """
+    if forward_message_id:
+        sender_email = from_email
+        if not sender_email:
+            sender_email, _ = await _get_send_as_identity_and_signature(
+                service, from_email=None, fallback_email=user_google_email
+            )
+        logger.info(
+            f"[draft_gmail_message] Drafting forward of message '{forward_message_id}' for '{user_google_email}'"
+        )
+        return await _forward_gmail_message_impl(
+            service=service,
+            message_id=forward_message_id,
+            to=to,
+            subject=subject,
+            forward_message=body,
+            forward_message_format=body_format,
+            include_attachments=include_forwarded_attachments,
+            attachments=attachments,
+            cc=cc,
+            bcc=bcc,
+            from_name=from_name,
+            from_email=sender_email,
+            user_google_email=user_google_email,
+            as_draft=True,
+        )
+
+    if subject is None or body is None:
+        raise UserInputError(
+            "Both 'subject' and 'body' are required when drafting a message "
+            "(they are optional only when forwarding via 'forward_message_id')."
+        )
+
     logger.info(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', subject_len={len(subject) if subject else 0}"
     )
