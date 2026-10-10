@@ -267,6 +267,78 @@ class TestSweepExpired:
         assert storage.sweep_expired() == 1
 
 
+class TestForkRetention:
+    """Fork: files live 24 hours and a background thread deletes older ones."""
+
+    def test_default_keeps_files_for_24_hours(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path / "attachments")
+        storage = AttachmentStorage()
+        assert storage.expiration_seconds == 24 * 3600
+        attachment_storage._ensure_storage_dir()
+        young = attachment_storage.STORAGE_DIR / "young.bin"
+        old = attachment_storage.STORAGE_DIR / "old.bin"
+        for path, age in ((young, 23 * 3600), (old, 25 * 3600)):
+            path.write_bytes(b"payload")
+            past = time.time() - age
+            os.utime(path, (past, past))
+
+        assert storage.sweep_expired() == 1
+        assert young.exists() and not old.exists()
+
+    def test_background_sweep_deletes_files_without_any_tool_call(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path / "attachments")
+        storage = AttachmentStorage(expiration_seconds=3600)
+        saved = storage.save_attachment(
+            base64.urlsafe_b64encode(b"payload").decode(), filename="doc.pdf"
+        )
+        past = time.time() - 7200
+        os.utime(saved.path, (past, past))
+
+        import threading
+
+        stop = threading.Event()
+        t = threading.Thread(
+            target=attachment_storage._background_sweep,
+            args=(storage, 0.01, stop),
+            daemon=True,
+        )
+        t.start()
+        try:
+            deadline = time.time() + 5
+            while Path(saved.path).exists() and time.time() < deadline:
+                time.sleep(0.02)
+        finally:
+            stop.set()
+            t.join(timeout=5)
+
+        assert not t.is_alive()
+        assert not Path(saved.path).exists()
+        # Metadata is left to lookups, which then report the file as gone.
+        assert storage.get_attachment_path(saved.file_id) is None
+        assert saved.file_id not in storage._metadata
+
+    def test_first_access_starts_one_sweeper_thread(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path / "attachments")
+        monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
+        started = []
+
+        class FakeThread:
+            def __init__(self, **kwargs):
+                started.append(kwargs)
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(attachment_storage.threading, "Thread", FakeThread)
+        attachment_storage.get_attachment_storage()
+        attachment_storage.get_attachment_storage()
+
+        assert len(started) == 1
+        assert started[0]["daemon"] is True
+
+
 class TestGetAttachmentStorageSweeps:
     """Tests for sweeping on singleton access."""
 
@@ -276,7 +348,7 @@ class TestGetAttachmentStorageSweeps:
         attachment_storage._ensure_storage_dir()
         stale = attachment_storage.STORAGE_DIR / "left-by-previous-process.bin"
         stale.write_bytes(b"payload")
-        past = time.time() - 7200
+        past = time.time() - 25 * 3600
         os.utime(stale, (past, past))
 
         attachment_storage.get_attachment_storage()
@@ -295,7 +367,7 @@ class TestGetAttachmentStorageSweeps:
         first = attachment_storage.get_attachment_storage()
         assert orphan.exists()
 
-        past = time.time() - 7200
+        past = time.time() - 25 * 3600
         os.utime(orphan, (past, past))
         second = attachment_storage.get_attachment_storage()
 
@@ -310,7 +382,7 @@ class TestGetAttachmentStorageSweeps:
         attachment_storage._ensure_storage_dir()
         stale = attachment_storage.STORAGE_DIR / "stale.bin"
         stale.write_bytes(b"payload")
-        past = time.time() - 7200
+        past = time.time() - 25 * 3600
         os.utime(stale, (past, past))
 
         real_iterdir = Path.iterdir

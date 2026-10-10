@@ -741,7 +741,7 @@ async def test_download_http_mode_returns_url():
         )
 
     assert "Download URL:" in result
-    assert "expire after 1 hour" in result
+    assert "expire after 24 hours" in result
 
 
 @pytest.mark.asyncio

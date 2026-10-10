@@ -81,6 +81,10 @@ python3 ~/.local/bin/mcp_file_call.py google-workspace get_gmail_attachment_cont
 with `return_base64: true` in the arguments. The file goes to disk; the model
 sees `[saved N bytes to report.pdf]`.
 
+The server also keeps its own copy of every downloaded attachment for 24
+hours, then deletes it (checked every hour). Uploads are never stored on the
+server: they go from memory straight to Gmail.
+
 ### Limits
 
 - The script refuses a request larger than the hub accepts (default 70 MiB,

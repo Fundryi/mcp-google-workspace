@@ -65,7 +65,7 @@ Content handling:
 - Other files: downloaded, UTF-8 decoded if possible
 
 ### get_drive_file_download_url
-Download a file to local disk (stdio mode) or get a temporary URL (HTTP mode, valid 1 hour).
+Download a file to local disk (stdio mode) or get a temporary URL (HTTP mode, valid 24 hours).
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|

@@ -65,7 +65,7 @@ Adds an emoji reaction to a message.
 | emoji_unicode | string | yes | | Literal Unicode emoji character (not a shortcode) |
 
 ### download_chat_attachment
-Downloads an attachment from a Chat message. Returns a local file path (stdio mode) or a temporary URL valid for 1 hour (HTTP mode).
+Downloads an attachment from a Chat message. Returns a local file path (stdio mode) or a temporary URL valid for 24 hours (HTTP mode).
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|

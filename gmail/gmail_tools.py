@@ -546,7 +546,7 @@ async def _export_full_message(
         result_lines.append(f"\n📎 Download URL: {get_attachment_url(saved.file_id)}")
         result_lines.append(
             "\nFetch the full message from the URL above (content is NOT included "
-            "in this response). The file will expire after 1 hour."
+            "in this response). The file will expire after 24 hours."
         )
 
     logger.info(
@@ -2294,7 +2294,7 @@ async def get_gmail_attachment_content(
     Downloads an email attachment and saves it to local disk.
 
     In stdio mode, returns the local file path for direct access.
-    In HTTP mode, returns a temporary download URL (valid for 1 hour).
+    In HTTP mode, returns a temporary download URL (valid for 24 hours).
     May re-fetch message metadata to resolve filename and MIME type.
 
     Args:
@@ -2526,11 +2526,12 @@ async def get_gmail_attachment_content(
             result_lines.append(f"\n📎 Saved to: {result.path}")
             result_lines.append(
                 "\nThe file has been saved to disk and can be accessed directly via the file path."
+                " It is deleted after 24 hours."
             )
         else:
             download_url = get_attachment_url(result.file_id)
             result_lines.append(f"\n📎 Download URL: {download_url}")
-            result_lines.append("\nThe file will expire after 1 hour.")
+            result_lines.append("\nThe file will expire after 24 hours.")
 
         result_lines.append(
             "\nNote: Attachment IDs are ephemeral. Always use IDs from the most recent message fetch."

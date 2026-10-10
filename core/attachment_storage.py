@@ -2,7 +2,7 @@
 Temporary attachment storage for Gmail attachments.
 
 Stores attachments to local disk and returns file paths for direct access.
-Files are automatically cleaned up after expiration (default 1 hour).
+Files are automatically cleaned up after expiration (default 24 hours).
 """
 
 import base64
@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import time
 import unicodedata
 import uuid
@@ -19,8 +20,11 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# Default expiration: 1 hour
-DEFAULT_EXPIRATION_SECONDS = 3600
+# Fork: 24 hours (upstream 1 hour), so a failed transfer can be retried from
+# the stored copy. A background sweep deletes files past this age even when
+# no tool runs.
+DEFAULT_EXPIRATION_SECONDS = 24 * 3600
+BACKGROUND_SWEEP_INTERVAL_SECONDS = 3600
 
 # Storage directory - configurable via WORKSPACE_ATTACHMENT_DIR env var
 # Uses absolute path to avoid creating tmp/ in arbitrary working directories (see #327)
@@ -323,8 +327,13 @@ class AttachmentStorage:
                 logger.warning(f"Failed to delete attachment file {file_path}: {e}")
             del self._metadata[file_id]
 
-    def sweep_expired(self) -> int:
-        """Remove files older than the expiration window based on mtime."""
+    def sweep_expired(self, drop_metadata: bool = True) -> int:
+        """Remove files older than the expiration window based on mtime.
+
+        drop_metadata=False is for the background thread: it only deletes
+        files, so it never iterates the metadata dict while a tool writes it.
+        Lookups already drop entries whose file is gone.
+        """
         cutoff = time.time() - self.expiration_seconds
         swept: set[str] = set()
 
@@ -346,7 +355,9 @@ class AttachmentStorage:
         except OSError as e:
             logger.warning(f"Failed to scan attachment storage {STORAGE_DIR}: {e}")
 
-        if swept:
+        if swept and not drop_metadata:
+            logger.info(f"Swept {len(swept)} expired attachment(s) from {STORAGE_DIR}")
+        elif swept:
             stale_ids = [
                 file_id
                 for file_id, metadata in self._metadata.items()
@@ -382,11 +393,30 @@ class AttachmentStorage:
 _attachment_storage: Optional[AttachmentStorage] = None
 
 
+def _background_sweep(
+    storage: AttachmentStorage,
+    interval: float,
+    stop: Optional[threading.Event] = None,
+) -> None:
+    stop = stop or threading.Event()
+    while not stop.wait(interval):
+        try:
+            storage.sweep_expired(drop_metadata=False)
+        except Exception as e:  # never let the sweeper thread die
+            logger.warning(f"Background attachment sweep failed: {e}")
+
+
 def get_attachment_storage() -> AttachmentStorage:
     """Get the global attachment storage instance."""
     global _attachment_storage
     if _attachment_storage is None:
         _attachment_storage = AttachmentStorage()
+        threading.Thread(
+            target=_background_sweep,
+            args=(_attachment_storage, BACKGROUND_SWEEP_INTERVAL_SECONDS),
+            name="attachment-sweeper",
+            daemon=True,
+        ).start()
     _attachment_storage.sweep_expired()
     return _attachment_storage
 
