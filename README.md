@@ -195,7 +195,7 @@ Set `WORKSPACE_ALLOWED_EMAILS` (comma separated) or put an `allowed.txt` file (o
 
 ### Staying current with upstream
 
-When you open this folder in VS Code, the task `Upstream: check for updates` runs (`.vscode/tasks.json`, VS Code asks once to allow automatic tasks). It fetches upstream and, when there are new commits, writes `UPSTREAM-UPDATE.md` with a ready prompt you can paste into an AI chat. You can also run it by hand: `python scripts/check_upstream.py`.
+Open `mcp-google-workspace.code-workspace` (or the folder) in VS Code and allow automatic tasks once. On every open, the task `Upstream: check for updates` (`.vscode/tasks.json`) runs `scripts/check_upstream.py`, which fetches upstream. When new commits exist it writes and opens `UPSTREAM-UPDATE.md`, which holds a ready prompt you can paste into an AI chat to do the merge. You can also run it by hand: `python scripts/check_upstream.py`.
 
 Manual flow:
 
@@ -206,8 +206,6 @@ git merge upstream/main                 # clean as long as our changes stay addi
 uv sync --frozen --group test
 uv run --frozen pytest
 ```
-
-VS Code does the first step for you. Open `mcp-google-workspace.code-workspace` (or the folder) and allow automatic tasks once. On every open, `scripts/check_upstream.py` fetches upstream. When new commits exist it writes and opens `UPSTREAM-UPDATE.md`, which holds a ready prompt you can paste into an AI chat to do the merge. You can also run it by hand: `python scripts/check_upstream.py`.
 
 ### Fixes on top of upstream
 
