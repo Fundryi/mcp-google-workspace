@@ -4,18 +4,59 @@ import base64
 import json
 import os
 import sys
+from unittest.mock import Mock
 
+import pytest
 from googleapiclient.discovery import build
 from googleapiclient.http import HttpMockSequence
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+import core.utils as core_utils
 import gmail.gmail_tools as gmail_tools
+from core.utils import UserInputError
 from gmail.gmail_tools import _gmail_message_kwargs
 
 
 def _raw(size: int) -> str:
     return base64.urlsafe_b64encode(b"x" * size).decode()
+
+
+def _unwrap(tool):
+    fn = tool.fn if hasattr(tool, "fn") else tool
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+    return fn
+
+
+@pytest.mark.asyncio
+async def test_missing_path_in_stdio_points_caller_to_remote_files_guide(
+    tmp_path, monkeypatch
+):
+    """A caller-side path on a remote stdio server must say why, not vanish."""
+    monkeypatch.setenv("ALLOWED_FILE_DIRS", str(tmp_path))
+    monkeypatch.setattr(core_utils, "get_transport_mode", lambda: "stdio")
+    service = Mock()
+    service.users.return_value.settings.return_value.sendAs.return_value.list.return_value.execute.return_value = {
+        "sendAs": [
+            {"sendAsEmail": "user@example.com", "isPrimary": True, "isDefault": True}
+        ]
+    }
+
+    with pytest.raises(UserInputError) as exc:
+        await _unwrap(gmail_tools.draft_gmail_message)(
+            service=service,
+            user_google_email="user@example.com",
+            subject="s",
+            body="b",
+            attachments=[{"path": str(tmp_path / "not-here.pdf")}],
+            include_signature=False,
+        )
+
+    message = str(exc.value)
+    assert "MCPHub" in message
+    assert core_utils.REMOTE_FILES_GUIDE_URL in message
+    service.users.return_value.drafts.return_value.create.assert_not_called()
 
 
 def test_small_message_keeps_json_route():

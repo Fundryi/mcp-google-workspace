@@ -379,7 +379,8 @@ A failed call returns a normal result with isError and a readable text body; fix
 Parameter names are snake_case; the one exception is create_drive_file's `fileUrl` (`file_url` is accepted as an alias).
 List tools stop at their page_size / max_* cap; when more results exist the last line of the result says "Capped at N". Raise the cap or use the tool's page token to continue.
 get_doc_content(preserve_context=True) includes links, chips, and document segments; use the default output for editing indices. Calendar timestamp offsets preserve the exact instant; for local wall time omit the offset and supply an IANA timezone, then check the saved times in the result.
-Gmail send, draft, and forward tools render bare newlines in caller-supplied HTML as line breaks before adding signatures or quoted content. get_script_activity(action="processes", script_id=...) includes visible runs by other users of that script."""
+Gmail send, draft, and forward tools render bare newlines in caller-supplied HTML as line breaks before adding signatures or quoted content. get_script_activity(action="processes", script_id=...) includes visible runs by other users of that script.
+File paths resolve on this server's disk. If this server runs on another machine than you (for example behind MCPHub), your paths do not exist here: send attachments as `content` (standard base64) + `filename`, and download with return_base64=True. For large files keep the bytes out of your context with the helper in docs/REMOTE-FILES.md (https://github.com/Fundryi/mcp-google-workspace/blob/main/docs/REMOTE-FILES.md)."""
 _server_instructions = (
     f"{_server_instructions}\n\n{_SARDINE_NOTES}"
     if _server_instructions

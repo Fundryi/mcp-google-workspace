@@ -1453,6 +1453,9 @@ def _prepare_gmail_message(
                 path_obj = validate_file_path(file_path)
                 if not path_obj.exists():
                     logger.error(f"File not found: path_len={len(file_path)}")
+                    attachment_errors.append(
+                        f"{filename or file_path}: file not found on the MCP server"
+                    )
                     continue
 
                 with open(path_obj, "rb") as f:

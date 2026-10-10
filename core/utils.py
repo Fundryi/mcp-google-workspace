@@ -165,6 +165,11 @@ that send ``'{"key":"val"}'`` instead of ``{"key": "val"}``.
 # Override via ALLOWED_FILE_DIRS env var (os.pathsep-separated paths).
 _ALLOWED_FILE_DIRS_ENV = "ALLOWED_FILE_DIRS"
 
+# Fork: how to send a file to this server when it runs on another machine.
+REMOTE_FILES_GUIDE_URL = (
+    "https://github.com/Fundryi/mcp-google-workspace/blob/main/docs/REMOTE-FILES.md"
+)
+
 # Operators of hosted deployments, where the server cannot see the caller's
 # disk, set this to stop tools reading server-side paths. Transport alone is not
 # a reliable signal: streamable-http on localhost shares the caller's filesystem.
@@ -284,14 +289,20 @@ def validate_file_path(file_path: str) -> Path:
     resolved = Path(file_path).resolve()
 
     if not resolved.exists():
-        # Over HTTP the server may be on another machine, where a caller-side
-        # path can never exist, so say so rather than imply a typo.
+        # The server may be on another machine, where a caller-side path can
+        # never exist, so say so rather than imply a typo. Fork: also in stdio,
+        # because a proxy such as MCPHub runs stdio servers remotely.
         hint = (
-            " Paths resolve on the MCP server's filesystem; if the server runs "
-            "on a different machine than the client, provide the file by URL "
-            "or as inline content instead."
-            if get_transport_mode() == "streamable-http"
-            else ""
+            (
+                " Paths resolve on the MCP server's filesystem; if the server runs "
+                "on a different machine than the client, provide the file by URL "
+                "or as inline content instead."
+                if get_transport_mode() == "streamable-http"
+                else " Paths resolve on the MCP server's filesystem. If this server "
+                "runs on another machine (for example behind MCPHub), send the file "
+                "as base64 content instead."
+            )
+            + f" Large files without filling the model's context: {REMOTE_FILES_GUIDE_URL}"
         )
         raise FileNotFoundError(f"Path does not exist: {resolved}.{hint}")
 
