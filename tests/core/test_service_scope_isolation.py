@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 from contextlib import nullcontext
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 import auth.service_decorator as decorators
 from auth.scopes import GMAIL_READONLY_SCOPE, PROTOCOL_AUTH_SCOPES
@@ -70,8 +71,8 @@ async def test_missing_chat_permissions_do_not_prevent_gmail(monkeypatch, multip
     async def gmail_tool(service, user_google_email):
         return "email works"
 
-    result = await chat_tool()
-    assert "Permission required for chat" in result
+    with pytest.raises(ToolError, match="Permission required for chat"):
+        await chat_tool()
     assert await gmail_tool() == "email works"
     assert built == ["gmail"]
 

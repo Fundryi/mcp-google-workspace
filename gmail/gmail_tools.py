@@ -3183,7 +3183,8 @@ async def _forward_gmail_message_impl(
     ),
 )
 @handle_http_errors("draft_gmail_message", service_type="gmail")
-@require_google_service("gmail", GMAIL_COMPOSE_SCOPE)
+# Fork: forward_message_id and quote_original read the original, which compose cannot.
+@require_google_service("gmail", ["gmail_read", GMAIL_COMPOSE_SCOPE])
 async def draft_gmail_message(
     service,
     user_google_email: str,

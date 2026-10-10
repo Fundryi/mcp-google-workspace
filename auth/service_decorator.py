@@ -11,6 +11,7 @@ from contextlib import ExitStack
 
 from google.auth.exceptions import RefreshError
 from google.oauth2 import service_account as google_service_account
+from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token, get_context
 from auth.google_auth import (
     GoogleAuthenticationError,
@@ -89,6 +90,7 @@ class GoogleScopeError(GoogleAuthenticationError):
     """The authenticated account has not granted this tool's permissions."""
 
 
+# Fork: raised as ToolError so the refusal arrives with isError, per AGENTS.md.
 def _missing_scope_message(service_name: str, error: GoogleScopeError) -> str:
     return (
         f"Permission required for {service_name}: {error}. "
@@ -912,7 +914,7 @@ def require_google_service(
                 logger.info(
                     "[%s] Missing %s permissions: %s", tool_name, service_name, e
                 )
-                return _missing_scope_message(service_name, e)
+                raise ToolError(_missing_scope_message(service_name, e)) from e
             except GoogleAuthenticationError as e:
                 logger.error(
                     f"[{tool_name}] Auth failed for {user_google_email} | "
@@ -1078,7 +1080,9 @@ def require_multiple_services(service_configs: List[Dict[str, Any]]):
                                 service_name,
                                 e,
                             )
-                            return _missing_scope_message(service_name, e)
+                            raise ToolError(
+                                _missing_scope_message(service_name, e)
+                            ) from e
                         except GoogleAuthenticationError as e:
                             logger.error(
                                 f"[{tool_name}] Auth failed for {user_google_email} | "

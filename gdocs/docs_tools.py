@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from typing_extensions import TypedDict
 
+from fastmcp.exceptions import ToolError
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -2777,10 +2778,12 @@ async def get_doc_as_markdown(
             timeout=30,
         )
     except (TimeoutError, asyncio.TimeoutError):
-        return (
-            f"Error: Timed out fetching document {document_id} from Google Docs API. "
+        # Fork: raise, not return. The worker thread may still be using the
+        # connection, and only an exception keeps recycling() from pooling it.
+        raise ToolError(
+            f"Timed out fetching document {document_id} from Google Docs API. "
             "The document may be too large or there may be a network issue. Please try again."
-        )
+        ) from None
 
     notice = ""
     if tab_id:
