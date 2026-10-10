@@ -274,6 +274,8 @@ class TestForkRetention:
         monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path / "attachments")
         storage = AttachmentStorage()
         assert storage.expiration_seconds == 24 * 3600
+        # GCS signs URLs with the upstream 1 hour; past 12 h they can fail early.
+        assert attachment_storage.DEFAULT_EXPIRATION_SECONDS == 3600
         attachment_storage._ensure_storage_dir()
         young = attachment_storage.STORAGE_DIR / "young.bin"
         old = attachment_storage.STORAGE_DIR / "old.bin"

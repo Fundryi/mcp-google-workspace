@@ -20,10 +20,13 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# Fork: 24 hours (upstream 1 hour), so a failed transfer can be retried from
-# the stored copy. A background sweep deletes files past this age even when
-# no tool runs.
-DEFAULT_EXPIRATION_SECONDS = 24 * 3600
+# Default expiration: 1 hour. GCS storage imports this for its signed URLs.
+DEFAULT_EXPIRATION_SECONDS = 3600
+# Fork: local files keep 24 hours, so a failed transfer can be retried from the
+# stored copy. GCS stays at 1 hour: IAM-signed URLs past 12 hours can stop
+# working early. A background sweep deletes files past this age even when no
+# tool runs.
+LOCAL_EXPIRATION_SECONDS = 24 * 3600
 BACKGROUND_SWEEP_INTERVAL_SECONDS = 3600
 
 # Storage directory - configurable via WORKSPACE_ATTACHMENT_DIR env var
@@ -103,7 +106,7 @@ class SavedAttachment(NamedTuple):
 class AttachmentStorage:
     """Manages temporary storage of email attachments."""
 
-    def __init__(self, expiration_seconds: int = DEFAULT_EXPIRATION_SECONDS):
+    def __init__(self, expiration_seconds: int = LOCAL_EXPIRATION_SECONDS):
         self.expiration_seconds = expiration_seconds
         self._metadata: Dict[str, Dict] = {}
 
