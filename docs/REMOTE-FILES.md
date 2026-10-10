@@ -82,7 +82,7 @@ with `return_base64: true` in the arguments. The file goes to disk; the model
 sees `[saved N bytes to report.pdf]`.
 
 The server also keeps its own copy of every downloaded attachment for 24
-hours, then deletes it (checked every hour). Uploads are never stored on the
+hours, then deletes it (checked at server start and every hour). Uploads are never stored on the
 server: they go from memory straight to Gmail.
 
 ### Limits
