@@ -341,6 +341,64 @@ class TestForkRetention:
         assert started[0]["daemon"] is True
 
 
+class TestStartupCleanup:
+    """Fork: cleanup runs at server start, not on the first attachment call."""
+
+    @pytest.fixture
+    def no_thread(self, monkeypatch):
+        started = []
+
+        class FakeThread:
+            def __init__(self, **kwargs):
+                started.append(kwargs)
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(attachment_storage.threading, "Thread", FakeThread)
+        return started
+
+    def test_startup_deletes_leftovers_and_starts_sweeper(
+        self, tmp_path, monkeypatch, no_thread
+    ):
+        monkeypatch.setattr(attachment_storage, "STORAGE_DIR", tmp_path / "attachments")
+        monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
+        attachment_storage._ensure_storage_dir()
+        leftover = attachment_storage.STORAGE_DIR / "from-before-reload.pdf"
+        recent = attachment_storage.STORAGE_DIR / "recent.pdf"
+        for path, age in ((leftover, 25 * 3600), (recent, 3600)):
+            path.write_bytes(b"payload")
+            past = time.time() - age
+            os.utime(path, (past, past))
+
+        attachment_storage.start_attachment_cleanup()
+
+        assert not leftover.exists()
+        assert recent.exists()
+        assert len(no_thread) == 1
+
+    def test_startup_without_storage_dir_creates_nothing(
+        self, tmp_path, monkeypatch, no_thread
+    ):
+        storage_dir = tmp_path / "attachments"
+        monkeypatch.setattr(attachment_storage, "STORAGE_DIR", storage_dir)
+        monkeypatch.setattr(attachment_storage, "_attachment_storage", None)
+
+        attachment_storage.start_attachment_cleanup()
+
+        assert not storage_dir.exists()
+
+    def test_startup_cleanup_never_raises(self, monkeypatch, caplog):
+        def boom():
+            raise OSError("disk gone")
+
+        monkeypatch.setattr(attachment_storage, "get_attachment_storage", boom)
+
+        attachment_storage.start_attachment_cleanup()
+
+        assert "Attachment cleanup at startup failed" in caplog.text
+
+
 class TestGetAttachmentStorageSweeps:
     """Tests for sweeping on singleton access."""
 

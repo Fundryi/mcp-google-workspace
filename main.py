@@ -967,6 +967,12 @@ def main():
                     f"OAuth callback starts on demand at {display_url}/oauth2callback"
                 )
 
+        # Fork: expire attachments left from earlier runs and start the hourly
+        # sweeper now, not on the first attachment tool call.
+        from core.attachment_storage import start_attachment_cleanup
+
+        start_attachment_cleanup()
+
         ui.step("Ready for MCP connections")
 
         if args.transport == "streamable-http" and _env_http_port:

@@ -437,6 +437,19 @@ def get_attachment_storage() -> AttachmentStorage:
     return _attachment_storage
 
 
+def start_attachment_cleanup() -> None:
+    """Fork: run at server start.
+
+    Deletes files left from earlier runs (reload, crash) right away and starts
+    the hourly sweeper, so expiry does not wait for the first attachment tool.
+    Never raises: storage trouble must not stop the server.
+    """
+    try:
+        get_attachment_storage()
+    except Exception as e:
+        logger.warning(f"Attachment cleanup at startup failed: {e}")
+
+
 def get_attachment_url(file_id: str) -> str:
     """
     Generate a URL for accessing an attachment.
