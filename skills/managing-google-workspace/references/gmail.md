@@ -278,9 +278,9 @@ Gmail keeps history for about a week. An older ID returns 404, which means read 
 
 | Tool | Extra parameters |
 |------|------------------|
-| `list_gmail_drafts` | `query` (string), `max_results` (int, default 20), `include_spam_trash` (bool, default false) |
+| `list_gmail_drafts` | `query` (string), `max_results` (int, default 20), `include_spam_trash` (bool, default false), `page_token` (string) |
 | `get_gmail_draft` / `delete_gmail_draft` / `send_gmail_draft` | `draft_id` (string, required) |
-| `update_gmail_draft` | `draft_id` (string, required), `subject`, `body`, `body_format` ("plain"/"html", default "plain"), `to`, `cc`, `bcc`, `thread_id` (all strings, optional) |
+| `update_gmail_draft` | `draft_id` (string, required), `subject`, `body`, `body_format` ("plain"/"html", default "plain"), `to`, `cc`, `bcc`, `thread_id` (all strings, optional). Only the fields given change. An empty `to`/`cc`/`bcc` removes that header. A new `body` keeps attachments, and is refused when the old body holds an inline image it would drop. |
 
 ### Lookups
 

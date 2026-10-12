@@ -173,12 +173,14 @@ This is an independent fork of [taylorwilsdon/google_workspace_mcp](https://gith
 Added tools live in `gmail/gmail_extended_tools.py` (41 tools):
 
 - Trash: `trash_gmail_message`, `untrash_gmail_message`, `trash_gmail_thread`, `untrash_gmail_thread`. There is no permanent delete and the `https://mail.google.com/` scope is never requested. That is a deliberate choice.
-- Drafts: `list_gmail_drafts`, `get_gmail_draft`, `update_gmail_draft`, `delete_gmail_draft`, `send_gmail_draft`. An explicit subject passed to `update_gmail_draft` is always kept as given, even inside a thread.
+- Drafts: `list_gmail_drafts`, `get_gmail_draft`, `update_gmail_draft`, `delete_gmail_draft`, `send_gmail_draft`. `update_gmail_draft` edits the draft in place and reports the headers Gmail stored. Attachments and reply headers always survive; a new `body` replaces the text and HTML parts, and without one they stay as they are. An explicit subject is always kept as given, even inside a thread.
 - Threads and labels: `list_gmail_threads`, `modify_gmail_thread_labels`, `get_gmail_label`, `get_gmail_filter`.
 - Mailbox: `get_gmail_profile`, `list_gmail_accounts`, `watch_gmail_mailbox`, `stop_gmail_mailbox_watch`.
 - Catch-up and bulk actions: `list_gmail_history`, `summarize_gmail_messages`, `modify_gmail_messages_by_query`, `apply_gmail_filter_to_existing_mail`.
 - Settings: vacation responder, IMAP, POP, display language, auto-forwarding (get and update for each).
 - Forwarding addresses (list, get, create, delete) and send-as aliases (list, get, create, update, delete, verify).
+
+At `--tool-tier extended` the fork loads trash, drafts, threads, the label, filter and profile lookups, `get_gmail_vacation_settings`, `list_gmail_history` and `modify_gmail_messages_by_query`, plus upstream's `get_gmail_threads_content_batch` and `batch_modify_gmail_message_labels`. Everything else above needs `--tool-tier complete`.
 
 ### Private and Workspace accounts in one server
 

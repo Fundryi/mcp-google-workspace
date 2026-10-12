@@ -14,14 +14,9 @@ gmail:
     - draft_gmail_message
     - list_gmail_filters
     - manage_gmail_filter
-
-  complete:
+    # Fork: promoted from complete. The two upstream names stay listed there too.
     - get_gmail_threads_content_batch
     - batch_modify_gmail_message_labels
-    - start_google_auth
-    - complete_google_auth
-    # Fork additions (gmail/gmail_extended_tools.py)
-    - list_gmail_accounts
     - trash_gmail_message
     - untrash_gmail_message
     - trash_gmail_thread
@@ -36,9 +31,19 @@ gmail:
     - get_gmail_label
     - get_gmail_filter
     - get_gmail_profile
+    - get_gmail_vacation_settings
+    - modify_gmail_messages_by_query
+    - list_gmail_history
+
+  complete:
+    - get_gmail_threads_content_batch
+    - batch_modify_gmail_message_labels
+    - start_google_auth
+    - complete_google_auth
+    # Fork additions (gmail/gmail_extended_tools.py)
+    - list_gmail_accounts
     - watch_gmail_mailbox
     - stop_gmail_mailbox_watch
-    - get_gmail_vacation_settings
     - update_gmail_vacation_settings
     - get_gmail_imap_settings
     - update_gmail_imap_settings
@@ -60,8 +65,6 @@ gmail:
     - verify_gmail_send_as
     - apply_gmail_filter_to_existing_mail
     - summarize_gmail_messages
-    - modify_gmail_messages_by_query
-    - list_gmail_history
 
 drive:
   core:

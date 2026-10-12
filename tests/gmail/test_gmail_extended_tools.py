@@ -1,6 +1,9 @@
 """Tests for the fork's Gmail management tools (gmail/gmail_extended_tools.py)."""
 
 import base64
+from email import message_from_bytes
+from email.message import EmailMessage
+from email.policy import SMTP
 import os
 import re
 import sys
@@ -24,34 +27,43 @@ def _unwrap(tool):
     return fn
 
 
-def _b64(text: str) -> str:
-    return base64.urlsafe_b64encode(text.encode()).decode()
+def _draft(subject="Re: Original topic", body="previous body", html=None, pdf=False):
+    message = EmailMessage(policy=SMTP)
+    message["Subject"] = subject
+    message["To"] = "them@example.com"
+    message["Reply-To"] = "me+replies@example.com"
+    message["In-Reply-To"] = "<abc@mail.gmail.com>"
+    message["References"] = "<abc@mail.gmail.com>"
+    message.set_content(body)
+    if html:
+        message.add_alternative(html, subtype="html")
+    if pdf:
+        message.add_attachment(
+            b"%PDF-1.4 fake", maintype="application", subtype="pdf", filename="a.pdf"
+        )
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    return {"id": "d1", "message": {"id": "m1", "threadId": "t1", "raw": raw}}
 
 
-def _draft(subject="Re: Original topic", body="previous body"):
-    return {
-        "id": "d1",
+def _draft_service(draft, stored_headers=()):
+    service = Mock()
+    stored = {
         "message": {
-            "id": "m1",
             "threadId": "t1",
             "payload": {
-                "mimeType": "text/plain",
-                "headers": [
-                    {"name": "Subject", "value": subject},
-                    {"name": "To", "value": "them@example.com"},
-                    {"name": "In-Reply-To", "value": "<abc@mail.gmail.com>"},
-                    {"name": "References", "value": "<abc@mail.gmail.com>"},
-                ],
-                "body": {"data": _b64(body)},
+                "headers": [{"name": n, "value": v} for n, v in stored_headers]
             },
-        },
+        }
     }
+    # First get is the raw draft, the second the read-back after the update.
+    service.users().drafts().get().execute.side_effect = [draft, stored]
+    service.users().drafts().update().execute.return_value = {"id": "d1"}
+    return service
 
 
-def _sent_raw(service) -> str:
-    body = service.users().drafts().update.call_args.kwargs["body"]
-    raw = body["message"]["raw"]
-    return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
+def _sent(service) -> EmailMessage:
+    raw = service.users().drafts().update.call_args.kwargs["body"]["message"]["raw"]
+    return message_from_bytes(base64.urlsafe_b64decode(raw), policy=SMTP)
 
 
 # --- registration ----------------------------------------------------------
@@ -76,6 +88,49 @@ def test_every_extended_tool_is_in_tool_tiers():
     ).read()
     for name in ext.EXTENDED_TOOL_NAMES:
         assert f"- {name}\n" in tiers, name
+
+
+def test_extended_tier_gmail_set_is_exact():
+    from core.tool_tier_loader import ToolTierLoader
+
+    loader = ToolTierLoader()
+    promoted = {
+        "get_gmail_threads_content_batch",
+        "batch_modify_gmail_message_labels",
+        "trash_gmail_message",
+        "untrash_gmail_message",
+        "trash_gmail_thread",
+        "untrash_gmail_thread",
+        "list_gmail_drafts",
+        "get_gmail_draft",
+        "update_gmail_draft",
+        "delete_gmail_draft",
+        "send_gmail_draft",
+        "list_gmail_threads",
+        "modify_gmail_thread_labels",
+        "get_gmail_label",
+        "get_gmail_filter",
+        "get_gmail_profile",
+        "get_gmail_vacation_settings",
+        "modify_gmail_messages_by_query",
+        "list_gmail_history",
+    }
+    extended = set(loader.get_tools_up_to_tier("extended", ["gmail"]))
+    complete = set(loader.get_tools_up_to_tier("complete", ["gmail"]))
+    upstream_extended = {
+        "get_gmail_attachment_content",
+        "get_gmail_thread_content",
+        "modify_gmail_message_labels",
+        "list_gmail_labels",
+        "manage_gmail_label",
+        "draft_gmail_message",
+        "list_gmail_filters",
+        "manage_gmail_filter",
+    }
+    core = set(loader.get_tools_for_tier("core", ["gmail"]))
+    assert extended == core | upstream_extended | promoted
+    # Forwarding, send-as, IMAP/POP and mailbox watch stay complete-only.
+    assert promoted < complete
 
 
 def test_no_permanent_delete_anywhere():
@@ -127,64 +182,177 @@ async def test_untrash_thread():
     service.users().threads().untrash.assert_called_once_with(userId="me", id="t1")
 
 
-# --- update_draft: subject precedence (the bug that kept it disabled upstream)
+# --- update_draft: edits the MIME message in place
+
+
+async def _update(service, **kwargs):
+    return await _unwrap(ext.update_gmail_draft)(
+        service=service, user_google_email="u@example.com", draft_id="d1", **kwargs
+    )
 
 
 @pytest.mark.asyncio
 async def test_update_draft_keeps_explicit_subject_in_thread():
-    service = Mock()
-    service.users().drafts().get().execute.return_value = _draft()
-    service.users().drafts().update().execute.return_value = {"id": "d1"}
+    service = _draft_service(_draft())
+    await _update(service, subject="My own subject", body="hi")
 
-    await _unwrap(ext.update_gmail_draft)(
-        service=service,
-        user_google_email="u@example.com",
-        draft_id="d1",
-        subject="My own subject",
-        body="hi",
-    )
-
-    text = _sent_raw(service)
-    assert "Subject: My own subject" in text
-    assert "Re: Original topic" not in text
-    # threading survives
-    assert "In-Reply-To: <abc@mail.gmail.com>" in text
-    assert "References: <abc@mail.gmail.com>" in text
-    assert (
-        service.users().drafts().update.call_args.kwargs["body"]["message"]["threadId"]
-        == "t1"
-    )
+    sent = _sent(service)
+    assert sent["Subject"] == "My own subject"
+    assert sent["In-Reply-To"] == "<abc@mail.gmail.com>"
+    assert sent["References"] == "<abc@mail.gmail.com>"
+    assert sent.get_body().get_content().strip() == "hi"
+    message = service.users().drafts().update.call_args.kwargs["body"]["message"]
+    assert message["threadId"] == "t1"
 
 
 @pytest.mark.asyncio
-async def test_update_draft_copies_subject_and_recipients_when_not_given():
-    service = Mock()
-    service.users().drafts().get().execute.return_value = _draft()
-    service.users().drafts().update().execute.return_value = {"id": "d1"}
+async def test_update_draft_header_only_keeps_html_attachment_and_reply_to():
+    service = _draft_service(_draft(html="<p>rich</p>", pdf=True))
+    await _update(service, to="x@y.z", cc="")
 
-    await _unwrap(ext.update_gmail_draft)(
-        service=service, user_google_email="u@example.com", draft_id="d1", body="new"
-    )
-
-    text = _sent_raw(service)
-    assert "Subject: Re: Original topic" in text
-    assert "To: them@example.com" in text
-    assert "new" in text
+    sent = _sent(service)
+    assert sent["To"] == "x@y.z"
+    assert sent["Cc"] is None
+    assert sent["Reply-To"] == "me+replies@example.com"
+    assert sent["Subject"] == "Re: Original topic"
+    assert len(sent.get_all("Subject")) == 1
+    assert "<p>rich</p>" in sent.get_body(("html",)).get_content()
+    assert [a.get_filename() for a in sent.iter_attachments()] == ["a.pdf"]
 
 
 @pytest.mark.asyncio
-async def test_update_draft_copies_body_when_not_given():
-    service = Mock()
-    service.users().drafts().get().execute.return_value = _draft(body="keep me")
-    service.users().drafts().update().execute.return_value = {"id": "d1"}
+async def test_update_draft_new_body_keeps_attachment():
+    service = _draft_service(_draft(html="<p>old</p>", pdf=True))
+    await _update(service, body="<p>new</p>", body_format="html")
 
-    await _unwrap(ext.update_gmail_draft)(
-        service=service, user_google_email="u@example.com", draft_id="d1", to="x@y.z"
+    sent = _sent(service)
+    assert "<p>new</p>" in sent.get_body(("html",)).get_content()
+    assert "old" not in sent.get_body(("plain",)).get_content()
+    assert [a.get_filename() for a in sent.iter_attachments()] == ["a.pdf"]
+    assert len(sent.get_all("MIME-Version")) == 1
+
+
+@pytest.mark.asyncio
+async def test_update_draft_refuses_body_that_would_drop_inline_image():
+    message = EmailMessage(policy=SMTP)
+    message["Subject"] = "s"
+    message.set_content("plain")
+    message.add_alternative("<img src=cid:i1>", subtype="html")
+    message.get_payload(1).add_related(
+        b"png", maintype="image", subtype="png", cid="<i1>"
+    )
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    service = _draft_service({"id": "d1", "message": {"id": "m1", "raw": raw}})
+
+    with pytest.raises(ext.UserInputError):
+        await _update(service, body="new")
+    service.users().drafts().update.return_value.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_update_draft_reports_what_gmail_stored():
+    service = _draft_service(_draft(), stored_headers=[("Subject", "Stored subject")])
+    result = await _update(service, subject="Sent subject")
+
+    assert "Subject: Stored subject" in result
+    assert "Sent subject" not in result
+
+
+# --- list_drafts -------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_drafts_batches_and_names_unreadable_drafts():
+    service = Mock()
+    service.users().drafts().list().execute.return_value = {
+        "drafts": [
+            {"id": "d1", "message": {"id": "m1", "threadId": "t1"}},
+            {"id": "d2", "message": {"id": "m2", "threadId": "t2"}},
+        ],
+        "nextPageToken": "next",
+    }
+    added = []
+    batch = Mock()
+    batch.add.side_effect = lambda request, request_id=None: added.append(request_id)
+    service.new_batch_http_request.return_value = batch
+
+    def _execute_batch():
+        callback = service.new_batch_http_request.call_args.kwargs["callback"]
+        # m1 fails, m2 answers: the subject must stay on d2, not slide to d1.
+        callback("m1", None, RuntimeError("gone"))
+        callback(
+            "m2",
+            {
+                "id": "m2",
+                "payload": {"headers": [{"name": "Subject", "value": "Second"}]},
+            },
+            None,
+        )
+
+    batch.execute.side_effect = _execute_batch
+
+    result = await _unwrap(ext.list_gmail_drafts)(
+        service=service, user_google_email="u@example.com", page_token="p1"
     )
 
-    text = _sent_raw(service)
-    assert "keep me" in text
-    assert "To: x@y.z" in text
+    assert added == ["m1", "m2"]
+    assert batch.execute.call_count == 1
+    assert "Draft ID: d1 | Thread ID: t1 | could not be read" in result
+    assert "Draft ID: d2 | Thread ID: t2 | Subject: Second" in result
+    assert "Next page token: next" in result
+    assert service.users().drafts().list.call_args.kwargs["pageToken"] == "p1"
+    get_kwargs = service.users().messages().get.call_args.kwargs
+    assert get_kwargs["metadataHeaders"] == ["Subject", "To"]
+
+
+# --- limits are refused, never reinterpreted ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_modify_by_query_refuses_zero_cap_before_any_call():
+    service = Mock()
+    with pytest.raises(ext.UserInputError):
+        await _unwrap(ext.modify_gmail_messages_by_query)(
+            service=service,
+            user_google_email="u@example.com",
+            query="from:x",
+            add_label_ids=["L"],
+            dry_run=False,
+            max_messages=0,
+        )
+    assert not service.users().messages().list.called
+    assert not service.users().messages().batchModify.called
+
+
+@pytest.mark.asyncio
+async def test_modify_by_query_reports_partial_apply():
+    service = Mock()
+    service.users().messages().list().execute.return_value = {
+        "messages": [{"id": f"m{n}"} for n in range(1500)]
+    }
+    service.users().messages().batchModify().execute.side_effect = [
+        {},
+        RuntimeError("boom"),
+    ]
+    with pytest.raises(Exception, match="Applied to 1000 of 1500 messages"):
+        await _unwrap(ext.modify_gmail_messages_by_query)(
+            service=service,
+            user_google_email="u@example.com",
+            query="from:x",
+            add_label_ids=["L"],
+            dry_run=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_history_refuses_zero_cap():
+    with pytest.raises(ext.UserInputError):
+        await _unwrap(ext.list_gmail_history)(
+            service=Mock(),
+            user_google_email="u@example.com",
+            start_history_id="1",
+            max_changes=0,
+        )
 
 
 # --- settings --------------------------------------------------------------

@@ -9,6 +9,7 @@ never permanent delete: that decision carried over from mcp-gmail-multi.
 import asyncio
 import base64
 import logging
+from email import message_from_bytes
 from email.message import EmailMessage
 from email.policy import SMTP
 import functools
@@ -30,13 +31,19 @@ from auth.scopes import (
 )
 from auth.service_decorator import require_google_service
 from core.server import server
-from core.utils import StringList, handle_http_errors
+from core.utils import (
+    GOOGLE_API_WRITE_RETRIES,
+    StringList,
+    UserInputError,
+    handle_http_errors,
+)
 from gmail.gmail_helpers import html_to_text_preserving_breaks
 from gmail.gmail_tools import (
     GMAIL_REQUEST_DELAY,
     GMAIL_SEARCH_HEADER_BATCH_SIZE,
     _extract_headers,
     _extract_message_body,
+    _gmail_message_kwargs,
     _label_names,
 )
 
@@ -234,6 +241,7 @@ async def list_gmail_drafts(
     query: Optional[str] = None,
     max_results: int = 20,
     include_spam_trash: bool = False,
+    page_token: Optional[str] = None,
 ) -> str:
     """
     Lists drafts in the user's mailbox with their subject and recipients.
@@ -243,9 +251,11 @@ async def list_gmail_drafts(
         query (Optional[str]): Gmail search query to filter drafts.
         max_results (int): Maximum number of drafts to return (1-100). Defaults to 20.
         include_spam_trash (bool): Include drafts from SPAM and TRASH.
+        page_token (Optional[str]): Token from a previous call for the next page.
 
     Returns:
-        str: One line per draft with draft ID, thread ID, subject, and To.
+        str: One line per draft with draft ID, thread ID, subject, and To,
+        plus the next page token.
     """
     logger.info(f"[list_gmail_drafts] Email: '{user_google_email}', Query: '{query}'")
     params = _drop_none(
@@ -253,35 +263,33 @@ async def list_gmail_drafts(
         q=query,
         maxResults=max(1, min(max_results, 100)),
         includeSpamTrash=include_spam_trash or None,
+        pageToken=page_token,
     )
     response = await asyncio.to_thread(service.users().drafts().list(**params).execute)
     drafts = response.get("drafts", [])
     if not drafts:
         return "No drafts found."
 
+    found = {
+        message["id"]: message
+        for message in await _message_metadata(
+            service, [draft["message"]["id"] for draft in drafts], ["Subject", "To"]
+        )
+    }
     lines = [f"Found {len(drafts)} drafts:", ""]
     for draft in drafts:
-        detail = await asyncio.to_thread(
-            service.users()
-            .drafts()
-            .get(
-                userId="me",
-                id=draft["id"],
-                format="metadata",
-                metadataHeaders=["Subject", "To"],
-            )
-            .execute
-        )
-        message = detail.get("message", {})
+        message = found.get(draft["message"]["id"])
+        prefix = f"- Draft ID: {draft['id']} | Thread ID: {draft['message'].get('threadId', '')}"
+        if message is None:
+            lines.append(f"{prefix} | could not be read")
+            continue
         headers = _extract_headers(message.get("payload", {}), ["Subject", "To"])
         lines.append(
-            f"- Draft ID: {draft['id']} | Thread ID: {message.get('threadId', '')} | "
-            f"Subject: {headers.get('Subject', '(no subject)')} | "
+            f"{prefix} | Subject: {headers.get('Subject', '(no subject)')} | "
             f"To: {headers.get('To', '(none)')}"
         )
     if response.get("nextPageToken"):
-        lines.append("")
-        lines.append("More drafts exist; narrow the query or raise max_results.")
+        lines += ["", f"Next page token: {response['nextPageToken']}"]
     return "\n".join(lines)
 
 
@@ -316,24 +324,31 @@ async def get_gmail_draft(service, user_google_email: str, draft_id: str) -> str
     return "\n".join(lines)
 
 
-def _build_draft_raw(
-    subject: str,
-    body: str,
-    body_format: str,
-    headers: Dict[str, str],
-) -> str:
-    """Build a base64url RFC 2822 message. The subject is used as given."""
-    message = EmailMessage(policy=SMTP)
-    message["Subject"] = subject
-    for name in ("From", "To", "Cc", "Bcc", "In-Reply-To", "References"):
-        if headers.get(name):
-            message[name] = headers[name]
-    if body_format == "html":
-        message.set_content(html_to_text_preserving_breaks(body).strip())
-        message.add_alternative(body, subtype="html")
-    else:
-        message.set_content(body)
-    return base64.urlsafe_b64encode(message.as_bytes()).decode()
+def _draft_body_part(message: EmailMessage) -> EmailMessage:
+    """The part holding a draft's text: the message itself, or the first part
+    of a multipart/mixed, so attachments beside it survive a body change. Only
+    a text part or an alternative of text parts is replaced; a richer body
+    (inline images, related HTML) is refused rather than half rewritten."""
+    part = message
+    while part.get_content_type() == "multipart/mixed" and part.get_payload():
+        part = part.get_payload(0)
+    children = (
+        part.get_payload()
+        if part.get_content_type() == "multipart/alternative"
+        else [part]
+    )
+    if any(
+        child.is_multipart()
+        or child.is_attachment()
+        or child.get_content_maintype() != "text"
+        for child in children
+    ):
+        raise UserInputError(
+            "This draft's body has inline images or other embedded parts that a "
+            "new body would break. Change only the headers, or edit the body in "
+            "Gmail."
+        )
+    return part
 
 
 @server.tool(title="Update Gmail Draft", annotations=_WRITE)
@@ -352,54 +367,88 @@ async def update_gmail_draft(
     thread_id: Optional[str] = None,
 ) -> str:
     """
-    Replaces a draft's content. Any field left out is copied from the current
-    draft, including the thread and reply headers. An explicit subject is
-    always used as given; it is never rewritten from the thread.
+    Edits a draft in place. Only the fields given change; everything else,
+    including attachments, inline images, the HTML part and reply headers, is
+    kept as it is. An explicit subject is always used as given.
 
     Args:
         user_google_email (str): The user's Google email address. Required.
         draft_id (str): The ID of the draft to update.
-        subject (Optional[str]): New subject. Defaults to the current subject.
-        body (Optional[str]): New body. Defaults to the current plain text body.
+        subject (Optional[str]): New subject.
+        body (Optional[str]): New body. Replaces the text and HTML parts; attachments stay.
         body_format (Literal["plain", "html"]): Format of body. Defaults to plain.
-        to (Optional[str]): New To header. Defaults to the current one.
-        cc (Optional[str]): New Cc header. Defaults to the current one.
-        bcc (Optional[str]): New Bcc header. Defaults to the current one.
+        to (Optional[str]): New To header. An empty string removes it.
+        cc (Optional[str]): New Cc header. An empty string removes it.
+        bcc (Optional[str]): New Bcc header. An empty string removes it.
         thread_id (Optional[str]): Thread to attach to. Defaults to the current one.
 
     Returns:
-        str: Confirmation with the draft ID.
+        str: The headers Gmail stored, read back after the update.
     """
     logger.info(f"[update_gmail_draft] Email: '{user_google_email}', ID: '{draft_id}'")
     current = await asyncio.to_thread(
-        service.users().drafts().get(userId="me", id=draft_id, format="full").execute
+        service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
     )
-    message = current.get("message", {})
-    payload = message.get("payload", {})
-    headers = _extract_headers(payload, _DRAFT_HEADERS)
-    if to is not None:
-        headers["To"] = to
-    if cc is not None:
-        headers["Cc"] = cc
-    if bcc is not None:
-        headers["Bcc"] = bcc
+    old = current.get("message", {})
+    raw = old["raw"]
+    message = message_from_bytes(
+        base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)), policy=SMTP
+    )
 
-    final_subject = subject if subject is not None else headers.get("Subject", "")
-    final_body = body if body is not None else _extract_message_body(payload)
-    raw = _build_draft_raw(final_subject, final_body, body_format, headers)
+    if body is not None:
+        part = _draft_body_part(message)
+        part.clear_content()  # set_content refuses a multipart/alternative part
+        if body_format == "html":
+            part.set_content(html_to_text_preserving_breaks(body).strip())
+            part.add_alternative(body, subtype="html")
+        else:
+            part.set_content(body)
+    for name, value in (("Subject", subject), ("To", to), ("Cc", cc), ("Bcc", bcc)):
+        if value is not None:
+            del message[name]
+            if value:
+                message[name] = value
 
-    new_message: Dict[str, Any] = {"raw": raw}
-    final_thread_id = thread_id or message.get("threadId")
-    if final_thread_id:
-        new_message["threadId"] = final_thread_id
-
+    final_thread_id = thread_id or old.get("threadId")
     updated = await asyncio.to_thread(
         service.users()
         .drafts()
-        .update(userId="me", id=draft_id, body={"message": new_message})
-        .execute
+        .update(
+            id=draft_id,
+            **_gmail_message_kwargs(
+                base64.urlsafe_b64encode(message.as_bytes()).decode(),
+                {"threadId": final_thread_id} if final_thread_id else {},
+                draft=True,
+            ),
+        )
+        .execute,
+        num_retries=GOOGLE_API_WRITE_RETRIES,
     )
-    return f"Draft updated.\nDraft ID: {updated.get('id', draft_id)}\nSubject: {final_subject}"
+
+    # Report what Gmail stored, not what was sent: it rewrites some headers.
+    # drafts.get, not messages.get: the compose scope only allows the former.
+    shown = ["Subject", "To", "Cc", "Bcc"]
+    try:
+        stored = (
+            await asyncio.to_thread(
+                service.users()
+                .drafts()
+                .get(userId="me", id=draft_id, format="metadata")
+                .execute
+            )
+        )["message"]
+    except Exception as exc:
+        return (
+            f"Draft updated, but reading it back failed: {exc}\n"
+            f"Draft ID: {updated.get('id', draft_id)}"
+        )
+    headers = _extract_headers(stored.get("payload", {}), shown)
+    lines = [
+        "Draft updated. Stored values:",
+        f"Draft ID: {updated.get('id', draft_id)}",
+        f"Thread ID: {stored.get('threadId', '')}",
+    ]
+    return "\n".join(lines + [f"{n}: {headers[n]}" for n in shown if n in headers])
 
 
 @server.tool(title="Delete Gmail Draft", annotations=_DESTRUCTIVE)
@@ -1340,7 +1389,10 @@ async def _list_message_ids(service, query: str, limit: int) -> List[str]:
     return ids[:limit]
 
 
-def _metadata_request(service, message_id: str):
+_METADATA_HEADERS = ["From", "Subject", "Date"]
+
+
+def _metadata_request(service, message_id: str, headers: List[str] = _METADATA_HEADERS):
     """One messages.get for headers and label ids, no body."""
     return (
         service.users()
@@ -1349,13 +1401,15 @@ def _metadata_request(service, message_id: str):
             userId="me",
             id=message_id,
             format="metadata",
-            metadataHeaders=["From", "Subject", "Date"],
+            metadataHeaders=headers,
         )
     )
 
 
-async def _message_metadata(service, message_ids: List[str]) -> List[Dict[str, Any]]:
-    """Fetches From, Subject, Date and label ids for each message.
+async def _message_metadata(
+    service, message_ids: List[str], headers: List[str] = _METADATA_HEADERS
+) -> List[Dict[str, Any]]:
+    """Fetches the given headers (default From, Subject, Date) and label ids for each message.
 
     Goes through Gmail's batch endpoint, one HTTP request per chunk, and drops
     to one request at a time if that fails. Never in parallel: the service holds
@@ -1378,7 +1432,10 @@ async def _message_metadata(service, message_ids: List[str]) -> List[Dict[str, A
         try:
             batch = service.new_batch_http_request(callback=_collect)
             for message_id in chunk:
-                batch.add(_metadata_request(service, message_id), request_id=message_id)
+                batch.add(
+                    _metadata_request(service, message_id, headers),
+                    request_id=message_id,
+                )
             await asyncio.to_thread(batch.execute)
         except Exception as batch_error:
             logger.warning(
@@ -1387,7 +1444,7 @@ async def _message_metadata(service, message_ids: List[str]) -> List[Dict[str, A
             for message_id in chunk:
                 try:
                     by_id[message_id] = await asyncio.to_thread(
-                        _metadata_request(service, message_id).execute
+                        _metadata_request(service, message_id, headers).execute
                     )
                 except Exception as exc:
                     logger.warning(f"[_message_metadata] {message_id}: {exc}")
@@ -1556,6 +1613,8 @@ async def modify_gmail_messages_by_query(
         )
     if not query.strip():
         raise Exception("A query is required; refusing to touch the whole mailbox.")
+    if max_messages < 1:
+        raise UserInputError("max_messages must be at least 1")
 
     message_ids = await _list_message_ids(service, query, max_messages)
     header = [
@@ -1581,14 +1640,22 @@ async def modify_gmail_messages_by_query(
         addLabelIds=add_label_ids or None, removeLabelIds=remove_label_ids or None
     )
     for start in range(0, len(message_ids), 1000):  # batchModify caps at 1000 ids
-        await asyncio.to_thread(
-            service.users()
-            .messages()
-            .batchModify(
-                userId="me", body={**body, "ids": message_ids[start : start + 1000]}
+        try:
+            await asyncio.to_thread(
+                service.users()
+                .messages()
+                .batchModify(
+                    userId="me", body={**body, "ids": message_ids[start : start + 1000]}
+                )
+                .execute
             )
-            .execute
-        )
+        except Exception as exc:
+            if not start:
+                raise
+            raise Exception(
+                f"Applied to {start} of {len(message_ids)} messages, then a batch "
+                f"failed and may be partly applied: {exc}"
+            ) from exc
     return "\n".join(header + ["", f"Applied to {len(message_ids)} messages."])
 
 
@@ -1625,6 +1692,8 @@ async def list_gmail_history(
     logger.info(
         f"[list_gmail_history] Email: '{user_google_email}', Since: '{start_history_id}'"
     )
+    if max_changes < 1:
+        raise UserInputError("max_changes must be at least 1")
     records: List[Dict[str, Any]] = []
     latest_history_id = start_history_id
     page_token = None

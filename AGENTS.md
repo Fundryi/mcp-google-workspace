@@ -88,6 +88,9 @@ No `delete_message`, no `batch_delete`, no `delete_thread`, and never request
 the `https://mail.google.com/` scope. Trash and untrash cover the need and can
 be undone. A test guards this.
 
+Drafts have no trash, so `delete_gmail_draft` deletes for good. It needs only
+`gmail.compose` and is the one accepted exception.
+
 ## MCP protocol and SDK
 
 One command serves MCP 2026-07-28 (stateless, `server/discover`, no

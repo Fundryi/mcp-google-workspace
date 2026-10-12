@@ -100,6 +100,8 @@ For server options, transport, auth modes, tool filtering, and deployment: [refe
 
 Accounts differ in capability: the sharing-scope writes (send-as and forwarding-address create/update/delete, auto-forwarding update) work only on accounts `list_gmail_accounts` marks `all tools`. When such a call refuses, report it -- do not retry.
 
+At `--tool-tier extended` these rows are not loaded and return -32602: `list_gmail_accounts`, the vacation update, IMAP/POP/language, auto-forwarding, forwarding addresses, send-as and push notifications. They need `--tool-tier complete`.
+
 For parameters: [references/gmail.md](references/gmail.md)
 
 ### Google Drive
